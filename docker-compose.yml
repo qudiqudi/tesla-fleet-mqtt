@@ -112,6 +112,26 @@ services:
     volumes:
       - ${STACK_DIR:-.}/proxy/tls-cert.pem:/certs/proxy-ca.pem:ro
 
+  # Optional historian: streams MQTT telemetry into InfluxDB 2.x. Enable with COMPOSE_PROFILES=history.
+  tesla-influx:
+    <<: *common
+    build: ${STACK_DIR:-.}/historian
+    container_name: tesla-influx
+    profiles: ["history"]
+    depends_on:
+      - tesla-fleet-telemetry
+    environment:
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      INFLUX_URL: ${INFLUX_URL:-http://influxdb:8086}
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-tesla}
+      INFLUX_MEASUREMENT: ${INFLUX_MEASUREMENT:-vehicle}
+
   tesla-pubkey:
     <<: *common
     image: nginx:1.31.1-alpine
