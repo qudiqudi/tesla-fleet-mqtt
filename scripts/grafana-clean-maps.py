@@ -34,6 +34,11 @@ def clean_panel(p):
                                     "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
                                     "config": {"size": {"fixed": 4}},
                                     "tooltip": True}]}
+    # Hide the map layer legend ("Layer 1" box). Idempotent.
+    opts = p.setdefault("options", {})
+    if opts.get("legend", {}).get("show") is not False:
+        opts["legend"] = {"show": False}
+        n += 1
     return n
 
 

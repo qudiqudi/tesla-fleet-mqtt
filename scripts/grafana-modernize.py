@@ -209,6 +209,7 @@ def to_piechart(p):
 
 def to_geomap(p):
     p["options"] = {"basemap": {"type": "osm-standard"}, "view": {"id": "fit"},
+                    "legend": {"show": False},
                     "layers": [{"type": "markers",
                                 "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
                                 "config": {"size": {"fixed": 4}}, "tooltip": True}]}
