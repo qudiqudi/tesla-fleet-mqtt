@@ -23,6 +23,7 @@ ACCESS=$(curl -s "$TESLA_AUTH_URL" \
 [ -z "$ACCESS" ] && { echo "failed to get access token"; exit 1; }
 
 # Field list + intervals (seconds). Location needs the vehicle_location scope.
+# Full list of available fields: ../FIELDS.md
 jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
   --arg host "$TELEMETRY_HOST" --argjson port "$TELEMETRY_PORT" '{
   vins: [$vin],

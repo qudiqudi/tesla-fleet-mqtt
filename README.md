@@ -97,6 +97,8 @@ The car opens the telemetry stream on its next wake/drive; then `tesla/<VIN>/v/.
 - `tesla/<VIN>/alerts/<name>/current`, `tesla/<VIN>/errors/<name>`, `tesla/<VIN>/connectivity`.
 - Commands in: `tesla/cmd/<command>` with a JSON body. Results: `tesla/cmd_result/<command>`.
 
+The stack streams a 19-field default; the full set of ~260 streamable fields is in [`FIELDS.md`](FIELDS.md) — add any to `scripts/register-telemetry.sh` and re-run it.
+
 Examples:
 ```
 bash scripts/send-cmd.sh set_sentry_mode '{"on":true}'
