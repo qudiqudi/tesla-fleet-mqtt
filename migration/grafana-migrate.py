@@ -5,7 +5,7 @@ datasource. Moves your own dashboards between your own instances via their HTTP 
 
 Tokens are passed in the environment (not stored). Run in the tools container:
   docker exec -e SRC_GRAFANA_TOKEN=... -e DST_GRAFANA_TOKEN=... \
-    tesla-tools python scripts/grafana-migrate.py
+    tesla-tools python migration/grafana-migrate.py
 """
 import os
 import requests
