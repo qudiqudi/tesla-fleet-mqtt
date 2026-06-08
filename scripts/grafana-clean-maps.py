@@ -14,6 +14,8 @@ TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
 h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 MARK = "/*html_stripped*/"
+MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on the OSM basemap
+MARKER_SIZE = 6
 
 
 def clean_panel(p):
@@ -32,17 +34,27 @@ def clean_panel(p):
         p["options"] = {"basemap": {"type": "osm-standard"}, "view": {"id": "fit"},
                         "layers": [{"type": "markers",
                                     "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
-                                    "config": {"size": {"fixed": 4}, "showLegend": False},
+                                    "config": {"showLegend": False},
                                     "tooltip": True}]}
-    # Hide the per-layer legend ("Layer 1" box). It lives on each layer's config, not
-    # a top-level option. Drop any earlier bogus top-level legend key. Idempotent.
+    # Per-layer touch-ups (idempotent):
+    #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
+    #  - set a high-contrast marker color/size under config.style (the proper nesting)
     opts = p.setdefault("options", {})
     if "legend" in opts:
         opts.pop("legend"); n += 1
     for layer in opts.get("layers", []):
+        if layer.get("type") != "markers":
+            continue
         cfg = layer.setdefault("config", {})
         if cfg.get("showLegend") is not False:
             cfg["showLegend"] = False; n += 1
+        if "size" in cfg:  # loose key superseded by style.size
+            cfg.pop("size"); n += 1
+        style = cfg.setdefault("style", {})
+        want = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
+        for k, v in want.items():
+            if style.get(k) != v:
+                style[k] = v; n += 1
     return n
 
 

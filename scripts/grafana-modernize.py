@@ -211,7 +211,9 @@ def to_geomap(p):
     p["options"] = {"basemap": {"type": "osm-standard"}, "view": {"id": "fit"},
                     "layers": [{"type": "markers",
                                 "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
-                                "config": {"size": {"fixed": 4}, "showLegend": False},
+                                "config": {"showLegend": False,
+                                           "style": {"color": {"fixed": "#F2495C"},
+                                                     "size": {"fixed": 6}, "opacity": 0.9}},
                                 "tooltip": True}]}
     fc(p)
     p["type"] = "geomap"
