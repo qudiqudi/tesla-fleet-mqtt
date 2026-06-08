@@ -152,6 +152,45 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME:-tesla}
 
+  # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
+  # secrets stay in the container env (no secret file, no docker inspect). Profile "tools".
+  tesla-tools:
+    <<: *common
+    build: ${STACK_DIR:-.}/tools
+    container_name: tesla-tools
+    profiles: ["tools"]
+    volumes:
+      - ${STACK_DIR:-.}/scripts:/app/scripts:ro
+      - ${STACK_DIR:-.}/proxy:/app/proxy:ro
+      - ${STACK_DIR:-.}/certs:/app/certs:ro
+      - ${STACK_DIR:-.}/db:/app/db:ro
+    environment:
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      PROXY_URL: https://tesla-http-proxy:4443
+      TESLA_VIN: ${TESLA_VIN}
+      TESLA_CLIENT_ID: ${TESLA_CLIENT_ID}
+      TESLA_CLIENT_SECRET: ${TESLA_CLIENT_SECRET}
+      TESLA_REFRESH_TOKEN: ${TESLA_REFRESH_TOKEN}
+      TESLA_REDIRECT_URI: ${TESLA_REDIRECT_URI}
+      TESLA_AUTH_URL: ${TESLA_AUTH_URL}
+      FLEET_API_BASE: ${FLEET_API_BASE}
+      TELEMETRY_HOST: ${TELEMETRY_HOST}
+      TELEMETRY_PORT: ${TELEMETRY_PORT}
+      PARTNER_DOMAIN: ${PARTNER_DOMAIN}
+      INFLUX_URL: ${INFLUX_URL:-http://influxdb:8086}
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-tesla}
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      DB_HOST: ${DB_HOST:-mariadb}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-tesla}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-tesla}
+
   tesla-pubkey:
     <<: *common
     image: nginx:1.31.1-alpine

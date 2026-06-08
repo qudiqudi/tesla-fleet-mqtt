@@ -9,7 +9,7 @@ command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 
 PROXY_CERT="$ROOT/proxy/tls-cert.pem"
 CA_CRT="$ROOT/certs/ca.crt"
-PROXY_PORT="${PROXY_PORT:-4443}"
+PROXY_URL="${PROXY_URL:-https://tesla-http-proxy:4443}"
 TELEMETRY_PORT="${TELEMETRY_PORT:-443}"
 [ -r "$PROXY_CERT" ] || { echo "Missing $PROXY_CERT (run generate-keys.sh and start the proxy)"; exit 1; }
 [ -r "$CA_CRT" ]    || { echo "Missing $CA_CRT (run generate-keys.sh)"; exit 1; }
@@ -58,9 +58,8 @@ jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
   }
 }' > /tmp/tesla-tcfg.json
 
-echo "Registering via tesla-http-proxy on 127.0.0.1:${PROXY_PORT}..."
-curl -s --request POST "https://tesla-http-proxy:4443/api/1/vehicles/fleet_telemetry_config" \
-  --connect-to "tesla-http-proxy:4443:127.0.0.1:${PROXY_PORT}" \
+echo "Registering via $PROXY_URL ..."
+curl -s --request POST "$PROXY_URL/api/1/vehicles/fleet_telemetry_config" \
   --cacert "$PROXY_CERT" \
   --header "Authorization: Bearer $ACCESS" \
   --header 'Content-Type: application/json' \

@@ -15,8 +15,9 @@ BODY='{}'
 [ "$#" -ge 2 ] && BODY="$2"
 BASE="${MQTT_TOPIC_BASE%/}"
 
-pub(){ docker exec mosquitto mosquitto_pub -h localhost -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
-sub(){ docker exec mosquitto mosquitto_sub -h localhost -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+MQ_HOST="${MQTT_HOST:-mosquitto}"; MQ_PORT="${MQTT_PORT:-1883}"
+pub(){ mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+sub(){ mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
 
 echo "-> $BASE/cmd/$CMD   body=$BODY"
 sub -t "$BASE/cmd_result/$CMD" -C 1 -W 20 -v &

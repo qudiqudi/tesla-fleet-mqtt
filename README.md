@@ -127,7 +127,18 @@ This is a standard git-syncable compose stack, so any of these work:
 2. Provide config. Simplest: create a `.env` in the stack directory from `.env.example` — Compose reads it natively, the helper scripts read the same file, and it's gitignored so syncs won't clobber it. (You can also use the tool's env panel; Dockhand keeps those in a separate `.env.dockhand`.)
 3. Generate keys on the host in the stack directory — `bash scripts/generate-keys.sh` and `bash scripts/setup-broker-user.sh`. These need a host shell (openssl), and the generated `keys/ proxy/ certs/ pubkey/` are gitignored, so git sync preserves them.
 4. Existing reverse proxy or shared broker? Copy `examples/existing-stack/docker-compose.override.yml` to the stack root (Compose and these tools auto-merge `docker-compose.override.yml`) and set the matching env (`MQTT_HOST`, `PUID`/`PGID`, `TELEMETRY_BIND`).
-5. Deploy, then run `bash scripts/register-telemetry.sh` once.
+5. Deploy, then run the helper scripts (see below).
+
+### Running the helper scripts securely
+
+If your tool keeps secrets out of files on disk (e.g. Dockhand secret vars), don't run the scripts on the host — they wouldn't see the secrets, and reading them via `docker inspect` is leaky. Instead enable the `tools` profile and run the scripts inside the `tesla-tools` container, which Dockhand injects the secrets into directly:
+```
+COMPOSE_PROFILES=history,tools          # in your env
+docker exec tesla-tools bash scripts/register-telemetry.sh
+docker exec tesla-tools bash scripts/telemetry-status.sh
+docker exec -it tesla-tools bash scripts/send-cmd.sh flash_lights
+```
+No secret file, no `docker inspect`. The container reaches the proxy/broker/InfluxDB/MariaDB by name on the shared network. Standalone (non-Dockhand) users with a full `.env` can still run the scripts on the host.
 
 If the tool runs compose from an internal path that differs from the host path (Dockhand stores stacks under `/app/data/...`, which the host daemon can't resolve), bind mounts land on empty dirs and the proxy logs `open /keys/fleet-key.pem: no such file`. Fix: set `STACK_DIR` to the absolute **host** path of the stack directory (e.g. `/mnt/.../appdata/dockhand/stacks/<host>/<stack>`), so binds use that instead of relative paths.
 

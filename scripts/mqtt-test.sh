@@ -6,8 +6,9 @@ set -uo pipefail
 need MQTT_USER MQTT_PASSWORD MQTT_TOPIC_BASE TESLA_VIN
 BASE="${MQTT_TOPIC_BASE%/}"
 
-pub(){ docker exec mosquitto mosquitto_pub -h localhost -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
-sub(){ docker exec mosquitto mosquitto_sub -h localhost -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+MQ_HOST="${MQTT_HOST:-mosquitto}"; MQ_PORT="${MQTT_PORT:-1883}"
+pub(){ mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+sub(){ mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
 
 echo "=== 1. broker round-trip ==="
 pub -t "$BASE/diag" -r -m 'hello' 2>&1
@@ -16,10 +17,12 @@ pub -t "$BASE/diag" -r -n 2>/dev/null
 echo "$OUT" | grep -q "^$BASE/diag hello" && echo "  OK -> $OUT" || echo "  FAIL ($OUT) — broker auth/ACL problem for '$MQTT_USER'"
 
 echo
-echo "=== 2. command path: set_sentry_mode on ==="
+echo "=== 2. command path: set_sentry_mode on (result on $BASE/cmd_result) ==="
+sub -t "$BASE/cmd_result/set_sentry_mode" -C 1 -W 12 -v &
+SP=$!
+sleep 1
 pub -t "$BASE/cmd/set_sentry_mode" -m '{"on":true}'
-sleep 6
-docker logs tesla-cmd-bridge --since 30s 2>&1 | grep -E 'cmd |auth:|mqtt:' | tail -6 || echo "  (no bridge log lines)"
+wait $SP || echo "  (no result within 12s)"
 
 echo
 echo "=== 3. state stream: tesla/$TESLA_VIN/# for 20s ==="
