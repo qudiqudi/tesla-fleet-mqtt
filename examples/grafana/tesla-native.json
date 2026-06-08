@@ -1,0 +1,88 @@
+{
+  "__inputs": [
+    { "name": "DS_TESLALOGGER", "label": "teslalogger (MySQL)", "type": "datasource", "pluginId": "mysql", "pluginName": "MySQL" }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "13.0.0" },
+    { "type": "datasource", "id": "mysql", "name": "MySQL", "version": "1.0.0" }
+  ],
+  "title": "Tesla (native)",
+  "uid": "tesla-native",
+  "tags": ["tesla"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": { "from": "now-1y", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "car", "label": "Car", "type": "query",
+        "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+        "query": "SELECT COALESCE(display_name, CONCAT('Car ',id)) AS __text, id AS __value FROM cars",
+        "refresh": 1, "includeAll": false, "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "State", "type": "state-timeline",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 80 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT StartDate AS \"time\", state FROM state WHERE CarID=$car AND $__timeFilter(StartDate) ORDER BY StartDate" } ]
+    },
+    {
+      "title": "State of Charge", "type": "timeseries",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "percent", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT $__timeGroupAlias(Datum,$__interval), avg(battery_level) AS \"SoC\" FROM pos WHERE CarID=$car AND $__timeFilter(Datum) GROUP BY 1 ORDER BY 1" } ]
+    },
+    {
+      "title": "Range degradation (ideal range at >80% SoC, daily max)", "type": "timeseries",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "lengthkm", "custom": { "drawStyle": "points", "pointSize": 4 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT $__timeGroupAlias(Datum,'1d'), max(ideal_battery_range_km) AS \"Ideal range\" FROM pos WHERE CarID=$car AND battery_level>80 AND $__timeFilter(Datum) GROUP BY 1 ORDER BY 1" } ]
+    },
+    {
+      "title": "Map", "type": "geomap",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 13 },
+      "options": { "view": { "id": "fit" }, "basemap": { "type": "osm-standard" }, "layers": [ { "type": "markers", "location": { "mode": "coords", "latitude": "lat", "longitude": "lng" }, "config": { "size": { "fixed": 3 } } } ] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT lat, lng FROM pos WHERE CarID=$car AND $__timeFilter(Datum) AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY id" } ]
+    },
+    {
+      "title": "Charger type", "type": "piechart",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 13 },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT COALESCE(fast_charger_type,'AC') AS metric, COUNT(*) AS value FROM chargingstate WHERE CarID=$car AND EndDate IS NOT NULL AND $__timeFilter(StartDate) GROUP BY 1" } ]
+    },
+    {
+      "title": "Distance per day", "type": "barchart",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "lengthkm" }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT $__timeGroupAlias(d.StartDate,'1d'), SUM(ep.odometer-sp.odometer) AS \"km\" FROM drivestate d JOIN pos sp ON sp.id=d.StartPos JOIN pos ep ON ep.id=d.EndPos WHERE d.CarID=$car AND d.EndDate IS NOT NULL AND $__timeFilter(d.StartDate) GROUP BY 1 ORDER BY 1" } ]
+    },
+    {
+      "title": "Energy charged per day", "type": "barchart",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "kwatth" }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT $__timeGroupAlias(StartDate,'1d'), SUM(charge_energy_added) AS \"kWh\" FROM chargingstate WHERE CarID=$car AND EndDate IS NOT NULL AND $__timeFilter(StartDate) GROUP BY 1 ORDER BY 1" } ]
+    },
+    {
+      "title": "Recent trips", "type": "table",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 31 },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT d.StartDate AS 'Start', ROUND(ep.odometer-sp.odometer,1) AS 'km', TIMESTAMPDIFF(MINUTE,d.StartDate,d.EndDate) AS 'min', d.speed_max AS 'max km/h', d.power_max AS 'kW max' FROM drivestate d JOIN pos sp ON sp.id=d.StartPos JOIN pos ep ON ep.id=d.EndPos WHERE d.CarID=$car AND d.EndDate IS NOT NULL AND $__timeFilter(d.StartDate) ORDER BY d.StartDate DESC LIMIT 200" } ]
+    },
+    {
+      "title": "Recent charges", "type": "table",
+      "datasource": { "type": "mysql", "uid": "${DS_TESLALOGGER}" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 31 },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT StartDate AS 'Start', ROUND(charge_energy_added,1) AS 'kWh', max_charger_power AS 'kW', COALESCE(fast_charger_type,'AC') AS 'Type' FROM chargingstate WHERE CarID=$car AND EndDate IS NOT NULL AND $__timeFilter(StartDate) ORDER BY StartDate DESC LIMIT 200" } ]
+    }
+  ]
+}
