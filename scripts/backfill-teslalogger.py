@@ -15,12 +15,14 @@ TL = dict(host=os.environ.get("TL_DB_HOST", "teslalogger-db"),
           port=int(os.environ.get("TL_DB_PORT", "3306")),
           user=os.environ.get("TL_DB_USER", "teslalogger"),
           password=os.environ["TL_DB_PASSWORD"],
-          database=os.environ.get("TL_DB_NAME", "teslalogger"))
+          database=os.environ.get("TL_DB_NAME", "teslalogger"),
+          connect_timeout=10, read_timeout=120)
 DST = dict(host=os.environ.get("DB_HOST", "mariadb"),
            port=int(os.environ.get("DB_PORT", "3306")),
            user=os.environ.get("DB_USER", "tesla"),
            password=os.environ["DB_PASSWORD"],
-           database=os.environ.get("DB_NAME", "tesla"))
+           database=os.environ.get("DB_NAME", "tesla"),
+           connect_timeout=10)
 VIN = os.environ["TESLA_VIN"]
 
 
@@ -37,22 +39,22 @@ def main():
         car_id = row["id"]
     print("teslalogger CarID=%s for VIN %s" % (car_id, VIN))
 
-    # ---- drives ----
+    # ---- drives ---- (simple PK joins only; max_speed left to the live sessionizer)
+    print("fetching drives from teslalogger...", flush=True)
     with src.cursor() as c:
         c.execute("""
           SELECT ds.StartDate AS start_ts, ds.EndDate AS end_ts,
                  sp.odometer AS s_odo, ep.odometer AS e_odo,
                  sp.battery_level AS s_soc, ep.battery_level AS e_soc,
                  sp.lat AS s_lat, sp.lng AS s_lng, ep.lat AS e_lat, ep.lng AS e_lng,
-                 sp.outside_temp AS otemp,
-                 (SELECT MAX(speed) FROM pos
-                    WHERE CarID=ds.CarID AND Datum BETWEEN ds.StartDate AND ds.EndDate) AS max_speed
+                 sp.outside_temp AS otemp
           FROM drivestate ds
           JOIN pos sp ON sp.id = ds.StartPos
           JOIN pos ep ON ep.id = ds.EndPos
           WHERE ds.CarID=%s AND ds.EndDate IS NOT NULL
         """, (car_id,))
         drives = c.fetchall()
+    print("  got %d drives, inserting..." % len(drives), flush=True)
     n = 0
     with dst.cursor() as c:
         for d in drives:
@@ -69,11 +71,12 @@ def main():
                       (VIN, d["start_ts"], d["end_ts"], dur, d["s_odo"], d["e_odo"], dist,
                        d["s_soc"], d["e_soc"],
                        (d["s_soc"] - d["e_soc"]) if (d["s_soc"] is not None and d["e_soc"] is not None) else None,
-                       d["s_lat"], d["s_lng"], d["e_lat"], d["e_lng"], d["max_speed"], avg, d["otemp"]))
+                       d["s_lat"], d["s_lng"], d["e_lat"], d["e_lng"], None, avg, d["otemp"]))
             n += 1
     print("drives backfilled: %d" % n)
 
     # ---- charges ----
+    print("fetching charges from teslalogger...", flush=True)
     with src.cursor() as c:
         c.execute("""
           SELECT cs.StartDate AS start_ts, cs.EndDate AS end_ts,
