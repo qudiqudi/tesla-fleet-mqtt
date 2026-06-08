@@ -152,6 +152,28 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME:-tesla}
 
+  # Optional: write telemetry into teslalogger's schema (drives teslalogger's own dashboards).
+  # Writes to the DB named by TLW_DB_NAME (a copy of teslalogger). Profile "history".
+  tesla-tlwriter:
+    <<: *common
+    build: ${STACK_DIR:-.}/tlwriter
+    container_name: tesla-tlwriter
+    profiles: ["history"]
+    depends_on:
+      - tesla-fleet-telemetry
+    environment:
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      DB_HOST: ${DB_HOST:-mariadb}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:-tesla}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TLW_DB_NAME: ${TLW_DB_NAME:-teslalogger}
+      TESLA_VIN: ${TESLA_VIN}
+
   # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
   # secrets stay in the container env (no secret file, no docker inspect). Profile "tools".
   tesla-tools:
