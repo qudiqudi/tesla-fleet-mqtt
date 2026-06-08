@@ -1,0 +1,32 @@
+{
+  "host": "0.0.0.0",
+  "port": 4443,
+  "log_level": "info",
+  "json_log_enable": true,
+  "namespace": "${MQTT_TOPIC_BASE}",
+  "use_default_eng_ca": false,
+  "tls": {
+    "server_cert": "/certs/server.crt",
+    "server_key": "/certs/server.key"
+  },
+  "records": {
+    "V": ["mqtt"],
+    "alerts": ["mqtt"],
+    "errors": ["mqtt"],
+    "connectivity": ["mqtt"]
+  },
+  "mqtt": {
+    "broker": "${MQTT_HOST}:${MQTT_PORT}",
+    "client_id": "fleet-telemetry",
+    "username": "${MQTT_USER}",
+    "password": "${MQTT_PASSWORD}",
+    "topic_base": "${MQTT_TOPIC_BASE}",
+    "qos": 1,
+    "retained": true,
+    "connect_timeout_ms": 30000,
+    "publish_timeout_ms": 2500,
+    "disconnect_timeout_ms": 250,
+    "connect_retry_interval_ms": 10000,
+    "keep_alive_seconds": 30
+  }
+}

@@ -1,0 +1,127 @@
+# tesla-fleet-mqtt — self-hosted Tesla Fleet telemetry + commands over MQTT
+# See README.md for the full setup. All config comes from .env.
+#
+#   tesla-config-init      renders config/config.json from the template + .env (runs once per up)
+#   tesla-fleet-telemetry  receives the car's mTLS telemetry stream, publishes state to MQTT
+#   tesla-http-proxy       signs & forwards vehicle commands to the Fleet API (local only)
+#   tesla-cmd-bridge       subscribes <base>/cmd/# and calls the proxy
+#   tesla-pubkey           serves the 3P public key for partner registration
+#   mosquitto              MQTT broker (remove this service if you bring your own)
+
+x-common: &common
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - tesla
+
+services:
+
+  mosquitto:
+    <<: *common
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/config/passwd:/mosquitto/config/passwd:ro
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  tesla-config-init:
+    image: python:3.12-slim
+    container_name: tesla-config-init
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: "no"
+    environment:
+      TELEMETRY_HOST: ${TELEMETRY_HOST}
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+    volumes:
+      - ./templates:/templates:ro
+      - ./config:/config
+    command:
+      - python
+      - -c
+      - "import os; open('/config/config.json','w').write(os.path.expandvars(open('/templates/config.json.template').read()))"
+
+  tesla-fleet-telemetry:
+    <<: *common
+    image: tesla/fleet-telemetry:latest
+    container_name: tesla-fleet-telemetry
+    user: "${PUID:-1000}:${PGID:-1000}"
+    depends_on:
+      tesla-config-init:
+        condition: service_completed_successfully
+    command:
+      - /fleet-telemetry
+      - -config=/etc/fleet-telemetry/config.json
+    ports:
+      - "${TELEMETRY_BIND:-0.0.0.0}:${TELEMETRY_PORT:-443}:4443"
+    volumes:
+      - ./config/config.json:/etc/fleet-telemetry/config.json:ro
+      - ./certs:/certs:ro
+
+  tesla-http-proxy:
+    <<: *common
+    image: tesla/vehicle-command:latest
+    container_name: tesla-http-proxy
+    user: "${PUID:-1000}:${PGID:-1000}"
+    command:
+      - -tls-key
+      - /config/tls-key.pem
+      - -cert
+      - /config/tls-cert.pem
+      - -key-file
+      - /keys/fleet-key.pem
+      - -host
+      - 0.0.0.0
+      - -port
+      - "4443"
+    ports:
+      - "127.0.0.1:${PROXY_PORT:-4443}:4443"
+    volumes:
+      - ./proxy:/config:ro
+      - ./keys:/keys:ro
+
+  tesla-cmd-bridge:
+    <<: *common
+    build: ./bridge
+    image: tesla-cmd-bridge:local
+    container_name: tesla-cmd-bridge
+    user: "${PUID:-1000}:${PGID:-1000}"
+    depends_on:
+      - tesla-http-proxy
+    environment:
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      PROXY_URL: https://tesla-http-proxy:4443
+      PROXY_CACERT: /certs/proxy-ca.pem
+      TESLA_VIN: ${TESLA_VIN}
+      TESLA_CLIENT_ID: ${TESLA_CLIENT_ID}
+      TESLA_CLIENT_SECRET: ${TESLA_CLIENT_SECRET}
+      TESLA_REFRESH_TOKEN: ${TESLA_REFRESH_TOKEN}
+      TESLA_AUTH_URL: ${TESLA_AUTH_URL}
+    volumes:
+      - ./proxy/tls-cert.pem:/certs/proxy-ca.pem:ro
+
+  tesla-pubkey:
+    <<: *common
+    image: nginx:alpine
+    container_name: tesla-pubkey
+    ports:
+      - "${PUBKEY_PORT:-8088}:80"
+    volumes:
+      - ./pubkey:/usr/share/nginx/html:ro
+
+networks:
+  tesla:
+    name: tesla

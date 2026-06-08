@@ -1,0 +1,43 @@
+# Deploy alongside an existing reverse proxy (Traefik on :443) and a shared MQTT
+# broker on an existing docker network. Merge it on top of the base compose:
+#
+#   docker compose -f docker-compose.yml \
+#     -f examples/existing-stack/docker-compose.override.yml up -d
+#
+# (or copy it to ./docker-compose.override.yml so it auto-merges).
+# Requires Docker Compose v2.24+ (for !reset).
+#
+# In .env set:
+#   MQTT_HOST=mosquitto          # your existing broker's container name
+#   TELEMETRY_BIND=127.0.0.1     # not used for publishing here, but keep it off 0.0.0.0
+#   TELEMETRY_PORT=443           # the PUBLIC port the car uses (registered with Tesla, served by Traefik)
+#   PUID / PGID                  # match your stack (e.g. 3333)
+#
+# Also:
+#   - Make sure your broker's ACL grants the MQTT_USER read+write on  <MQTT_TOPIC_BASE>/#
+#   - Add examples/traefik/tesla-telemetry.yml (edit the hostname) to Traefik's rules dir,
+#     pointing at tesla-fleet-telemetry:4443 with tls.passthrough=true
+#   - Route Traefik Host(`${PARTNER_DOMAIN}`) to tesla-pubkey:80 (label or file rule),
+#     or disable tesla-pubkey here and serve the key file from your existing setup.
+
+services:
+  # You already run a broker — don't start the bundled one.
+  mosquitto:
+    profiles: ["unused"]
+
+  # Traefik reaches fleet-telemetry over the shared network via SNI passthrough,
+  # so don't publish 443 on the host (it would clash with Traefik's :443).
+  tesla-fleet-telemetry:
+    ports: !reset []
+
+  # Optional: if you serve the public key through your existing proxy already,
+  # uncomment to keep the bundled nginx out of the way.
+  # tesla-pubkey:
+  #   profiles: ["unused"]
+
+networks:
+  # Reuse your existing proxy network instead of creating a new one, so these
+  # containers can reach your mosquitto and be reached by Traefik.
+  tesla:
+    external: true
+    name: t2_proxy

@@ -1,0 +1,24 @@
+# OPTIONAL — only if you already run Traefik on :443 and can't publish 443 directly.
+# Traefik v3 dynamic config (file provider). Routes the telemetry hostname straight
+# through to fleet-telemetry without terminating TLS (the car does mutual TLS with
+# fleet-telemetry, so Traefik must NOT decrypt).
+#
+# With this in place, in .env set TELEMETRY_BIND=127.0.0.1 (or remove the published
+# port and put fleet-telemetry on Traefik's network), and point the service below at it.
+# Replace telemetry.example.com with your TELEMETRY_HOST.
+tcp:
+  routers:
+    tesla-telemetry:
+      entryPoints:
+        - websecure
+      rule: "HostSNI(`telemetry.example.com`)"
+      tls:
+        passthrough: true
+      service: tesla-telemetry
+  services:
+    tesla-telemetry:
+      loadBalancer:
+        servers:
+          # If fleet-telemetry shares Traefik's docker network: tesla-fleet-telemetry:4443
+          # If published on the host loopback:                   127.0.0.1:443
+          - address: "tesla-fleet-telemetry:4443"
