@@ -49,7 +49,7 @@ jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
       ChargerVoltage:     {interval_seconds: 30},
       Location:        {interval_seconds: 10},
       Gear:            {interval_seconds: 5},
-      Odometer:        {interval_seconds: 300},
+      Odometer:        {interval_seconds: 30},
       InsideTemp:      {interval_seconds: 60},
       OutsideTemp:     {interval_seconds: 60},
       HvacPower:       {interval_seconds: 30},
