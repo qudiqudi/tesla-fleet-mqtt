@@ -30,10 +30,17 @@ services:
   tesla-fleet-telemetry:
     ports: !reset []
 
-  # Optional: if you serve the public key through your existing proxy already,
-  # uncomment to keep the bundled nginx out of the way.
-  # tesla-pubkey:
-  #   profiles: ["unused"]
+  # Serve the public key through Traefik at https://${PARTNER_DOMAIN}/.well-known/...
+  # (websecure entrypoint + your default cert resolver). Needed for partner registration,
+  # adding/re-pairing a vehicle, or domain re-validation; harmless otherwise.
+  # If you serve the key elsewhere, replace this with `profiles: ["unused"]` to disable nginx.
+  tesla-pubkey:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tesla-pubkey-rtr.entrypoints=websecure"
+      - "traefik.http.routers.tesla-pubkey-rtr.rule=Host(`${PARTNER_DOMAIN}`)"
+      - "traefik.http.routers.tesla-pubkey-rtr.tls=true"
+      - "traefik.http.services.tesla-pubkey-svc.loadbalancer.server.port=80"
 
 networks:
   # Reuse your existing proxy network instead of creating a new one, so these
