@@ -129,6 +129,8 @@ This is a standard git-syncable compose stack, so any of these work:
 4. Existing reverse proxy or shared broker? Copy `examples/existing-stack/docker-compose.override.yml` to the stack root (Compose and these tools auto-merge `docker-compose.override.yml`) and set the matching env (`MQTT_HOST`, `PUID`/`PGID`, `TELEMETRY_BIND`).
 5. Deploy, then run `bash scripts/register-telemetry.sh` once.
 
+If the tool runs compose from an internal path that differs from the host path (Dockhand stores stacks under `/app/data/...`, which the host daemon can't resolve), bind mounts land on empty dirs and the proxy logs `open /keys/fleet-key.pem: no such file`. Fix: set `STACK_DIR` to the absolute **host** path of the stack directory (e.g. `/mnt/.../appdata/dockhand/stacks/<host>/<stack>`), so binds use that instead of relative paths.
+
 ## Troubleshooting (lessons learned)
 
 - "This endpoint must be called through the Vehicle Command HTTP Proxy" — `fleet_telemetry_config` and commands are signed; `register-telemetry.sh` already routes through the proxy.

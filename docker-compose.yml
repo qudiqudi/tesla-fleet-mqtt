@@ -25,10 +25,10 @@ services:
     ports:
       - "${MQTT_PORT:-1883}:1883"
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/config/passwd:/mosquitto/config/passwd:ro
-      - ./mosquitto/data:/mosquitto/data
-      - ./mosquitto/log:/mosquitto/log
+      - ${STACK_DIR:-.}/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ${STACK_DIR:-.}/mosquitto/config/passwd:/mosquitto/config/passwd:ro
+      - ${STACK_DIR:-.}/mosquitto/data:/mosquitto/data
+      - ${STACK_DIR:-.}/mosquitto/log:/mosquitto/log
 
   tesla-config-init:
     image: python:3.12-slim
@@ -43,8 +43,8 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD}
       MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
     volumes:
-      - ./templates:/templates:ro
-      - ./config:/config
+      - ${STACK_DIR:-.}/templates:/templates:ro
+      - ${STACK_DIR:-.}/config:/config
     command:
       - python
       - -c
@@ -64,8 +64,8 @@ services:
     ports:
       - "${TELEMETRY_BIND:-0.0.0.0}:${TELEMETRY_PORT:-443}:4443"
     volumes:
-      - ./config/config.json:/etc/fleet-telemetry/config.json:ro
-      - ./certs:/certs:ro
+      - ${STACK_DIR:-.}/config/config.json:/etc/fleet-telemetry/config.json:ro
+      - ${STACK_DIR:-.}/certs:/certs:ro
 
   tesla-http-proxy:
     <<: *common
@@ -86,12 +86,12 @@ services:
     ports:
       - "127.0.0.1:${PROXY_PORT:-4443}:4443"
     volumes:
-      - ./proxy:/config:ro
-      - ./keys:/keys:ro
+      - ${STACK_DIR:-.}/proxy:/config:ro
+      - ${STACK_DIR:-.}/keys:/keys:ro
 
   tesla-cmd-bridge:
     <<: *common
-    build: ./bridge
+    build: ${STACK_DIR:-.}/bridge
     image: tesla-cmd-bridge:local
     container_name: tesla-cmd-bridge
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -111,7 +111,7 @@ services:
       TESLA_REFRESH_TOKEN: ${TESLA_REFRESH_TOKEN}
       TESLA_AUTH_URL: ${TESLA_AUTH_URL}
     volumes:
-      - ./proxy/tls-cert.pem:/certs/proxy-ca.pem:ro
+      - ${STACK_DIR:-.}/proxy/tls-cert.pem:/certs/proxy-ca.pem:ro
 
   tesla-pubkey:
     <<: *common
@@ -120,7 +120,7 @@ services:
     ports:
       - "${PUBKEY_PORT:-8088}:80"
     volumes:
-      - ./pubkey:/usr/share/nginx/html:ro
+      - ${STACK_DIR:-.}/pubkey:/usr/share/nginx/html:ro
 
 networks:
   tesla:
