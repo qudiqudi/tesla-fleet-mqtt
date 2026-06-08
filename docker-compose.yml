@@ -190,6 +190,11 @@ services:
       DB_USER: ${DB_USER:-tesla}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME:-tesla}
+      # teslalogger source DB for the one-time backfill (optional)
+      TL_DB_HOST: ${TL_DB_HOST:-teslalogger-db}
+      TL_DB_USER: ${TL_DB_USER:-teslalogger}
+      TL_DB_PASSWORD: ${TL_DB_PASSWORD:-}
+      TL_DB_NAME: ${TL_DB_NAME:-teslalogger}
 
   tesla-pubkey:
     <<: *common
