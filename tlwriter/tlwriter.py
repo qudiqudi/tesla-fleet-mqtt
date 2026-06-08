@@ -129,7 +129,35 @@ def st(vin):
                                   "start_charging_id": None, "last_charging_id": None,
                                   "last_pos_id": None, "last_pos_ts": 0, "last_charge_row_ts": 0,
                                   "max_speed": 0, "max_power": 0.0, "start_energy": 0.0,
-                                  "charger_type": None})
+                                  "charger_type": None, "vstate": None, "state_id": None,
+                                  "shift": None, "shift_id": None})
+
+
+def set_vstate(vin, newstate, ts):
+    s = st(vin)
+    if s["vstate"] == newstate:
+        return
+    if s["state_id"]:
+        execute("UPDATE state SET EndDate=%s, EndPos=%s WHERE id=%s", (dts(ts), s["last_pos_id"], s["state_id"]))
+    s["vstate"] = newstate
+    s["state_id"] = execute("INSERT INTO state (StartDate,state,StartPos,CarID) VALUES (%s,%s,%s,%s)",
+                            (dts(ts), newstate, s["last_pos_id"], car_id))
+
+
+def set_shift(vin, gear, ts):
+    g = None
+    if gear is not None:
+        u = str(gear).upper()[-1:]
+        if u in ("P", "D", "R", "N"):
+            g = u
+    s = st(vin)
+    if s["shift"] == g:
+        return
+    if s["shift_id"]:
+        execute("UPDATE shiftstate SET EndDate=%s WHERE id=%s", (dts(ts), s["shift_id"]))
+    s["shift"] = g
+    s["shift_id"] = execute("INSERT INTO shiftstate (StartDate,state,CarID) VALUES (%s,%s,%s)",
+                            (dts(ts), g, car_id)) if g else None
 
 
 # ---- writers --------------------------------------------------------------
@@ -302,9 +330,12 @@ def ticker():
             for vin in list(latest.keys()):
                 L = latest[vin]
                 if (t - L.get("_ts", 0)) > ONLINE_TIMEOUT:
-                    # offline: close any open session
+                    # offline / asleep: close any open session and mark state
+                    ots = L.get("_ts", t)
                     if st(vin)["mode"] is not None:
-                        set_mode(vin, None, L.get("_ts", t))
+                        set_mode(vin, None, ots)
+                    set_vstate(vin, "asleep", ots)
+                    set_shift(vin, None, ots)
                     continue
                 a = active.get(vin, {})
                 charging = (t - a.get("charge", 0)) < CHARGE_END_TIMEOUT
@@ -326,6 +357,9 @@ def ticker():
                     write_pos(vin, t)
                 if s["mode"] == "charge" and (t - s["last_charge_row_ts"]) >= CHARGE_ROW_INTERVAL:
                     write_charging_row(vin, t)
+                set_vstate(vin, "driving" if s["mode"] == "drive" else
+                                "charging" if s["mode"] == "charge" else "online", t)
+                set_shift(vin, lv(vin, "Gear"), t)
 
 
 def main():
