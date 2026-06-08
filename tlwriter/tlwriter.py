@@ -97,6 +97,22 @@ def lv(vin, f):
     return latest.get(vin, {}).get(f)
 
 
+def power_kw(vin):
+    # drive/charge power from pack voltage x current (kW). Sign follows PackCurrent.
+    v, i = lv(vin, "PackVoltage"), lv(vin, "PackCurrent")
+    if isinstance(v, (int, float)) and isinstance(i, (int, float)):
+        return v * i / 1000.0
+    return None
+
+
+def ideal_range(vin):
+    return lv(vin, "IdealBatteryRange") if lv(vin, "IdealBatteryRange") is not None else lv(vin, "RatedRange")
+
+
+def est_range(vin):
+    return lv(vin, "EstBatteryRange") if lv(vin, "EstBatteryRange") is not None else lv(vin, "RatedRange")
+
+
 def as_int(x):
     return int(round(x)) if isinstance(x, (int, float)) else None
 
@@ -122,16 +138,24 @@ def write_pos(vin, ts):
     lat, lng = lv(vin, "Latitude"), lv(vin, "Longitude")
     if lat is None or lng is None:
         return
+    p = as_int(power_kw(vin))
     pid = execute(
         """INSERT INTO pos (Datum,lat,lng,speed,power,odometer,ideal_battery_range_km,
            outside_temp,inside_temp,battery_level,sentry_mode,is_preconditioning,
            battery_range_km,CarID) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        (dt3(ts), lat, lng, as_int(lv(vin, "VehicleSpeed")), None, lv(vin, "Odometer"),
-         lv(vin, "RatedRange"), lv(vin, "OutsideTemp"), lv(vin, "InsideTemp"), lv(vin, "Soc"),
+        (dt3(ts), lat, lng, as_int(lv(vin, "VehicleSpeed")), p, lv(vin, "Odometer"),
+         ideal_range(vin), lv(vin, "OutsideTemp"), lv(vin, "InsideTemp"), lv(vin, "Soc"),
          truthy_state(lv(vin, "SentryMode"), "Armed", "Aware", "Panic"),
-         truthy_state(lv(vin, "HvacPower"), "On"), lv(vin, "RatedRange"), car_id))
+         truthy_state(lv(vin, "HvacPower"), "On"), est_range(vin), car_id))
     if pid:
-        s = st(vin); s["last_pos_id"] = pid; s["last_pos_ts"] = ts
+        s = st(vin)
+        s["last_pos_id"] = pid
+        s["last_pos_ts"] = ts
+        if s["mode"] == "drive" and p is not None:
+            s["pmax"] = max(s.get("pmax", p), p)
+            s["pmin"] = min(s.get("pmin", p), p)
+            s["psum"] = s.get("psum", 0) + p
+            s["pcount"] = s.get("pcount", 0) + 1
     return pid
 
 
@@ -139,11 +163,12 @@ def write_charging_row(vin, ts):
     s = st(vin)
     cid = execute(
         """INSERT INTO charging (battery_level,charge_energy_added,charger_power,Datum,
-           ideal_battery_range_km,outside_temp,battery_range_km,CarID)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+           ideal_battery_range_km,charger_voltage,outside_temp,battery_range_km,CarID)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (lv(vin, "Soc") or 0, (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0),
          (lv(vin, "ACChargingPower") or 0) + (lv(vin, "DCChargingPower") or 0), dts(ts),
-         lv(vin, "RatedRange") or 0, lv(vin, "OutsideTemp"), lv(vin, "RatedRange"), car_id))
+         (ideal_range(vin) or 0), as_int(lv(vin, "ChargerVoltage")), lv(vin, "OutsideTemp"),
+         est_range(vin), car_id))
     if cid:
         s["last_charging_id"] = cid; s["last_charge_row_ts"] = ts
     return cid
@@ -156,6 +181,7 @@ def open_drive(vin, ts):
     if s["last_pos_id"] is None:
         return
     s["max_speed"] = 0
+    s["pmax"] = s["pmin"] = s["psum"] = s["pcount"] = 0
     s["drivestate_id"] = execute(
         "INSERT INTO drivestate (StartDate,StartPos,CarID) VALUES (%s,%s,%s)",
         (dts(ts), s["last_pos_id"], car_id))
@@ -167,9 +193,12 @@ def close_drive(vin, ts):
     if not s["drivestate_id"]:
         return
     write_pos(vin, ts)
+    pavg = (s.get("psum", 0) / s["pcount"]) if s.get("pcount") else None
     execute("""UPDATE drivestate SET EndDate=%s, EndPos=%s, speed_max=%s, outside_temp_avg=%s,
+               power_max=%s, power_min=%s, power_avg=%s,
                TPMS_FL=%s, TPMS_FR=%s, TPMS_RL=%s, TPMS_RR=%s WHERE id=%s""",
             (dts(ts), s["last_pos_id"], s["max_speed"], lv(vin, "OutsideTemp"),
+             s.get("pmax"), s.get("pmin"), pavg,
              lv(vin, "TpmsPressureFl"), lv(vin, "TpmsPressureFr"),
              lv(vin, "TpmsPressureRl"), lv(vin, "TpmsPressureRr"), s["drivestate_id"]))
     log("%s drive end" % vin)
