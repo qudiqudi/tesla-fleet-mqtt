@@ -4,12 +4,12 @@ Clean up geomap tooltips on the migrated dashboards: teslalogger builds an HTML 
 column for its old map tooltip, which native geomap renders as raw markup. This wraps each
 geomap query to strip HTML tags (and aliases it to 'info'), and pins the marker location to
 the lat/lng columns. Idempotent (marker comment). Run in the tools container:
-  docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python scripts/grafana-clean-maps.py
+  docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python migration/grafana-clean-maps.py
 """
 import os
 import requests
 
-DST = os.environ.get("DST_GRAFANA", "http://grafana:3003").rstrip("/")
+DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
 h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}

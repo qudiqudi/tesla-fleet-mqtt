@@ -8,13 +8,13 @@ is a dashboard that lives in this folder. Other links (external URLs, the teslal
 panel, dashboards outside the folder) are left untouched. Idempotent.
 
 Run in the tools container:
-  docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python scripts/grafana-fix-links.py
+  docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python migration/grafana-fix-links.py
 """
 import os
 import re
 import requests
 
-DST = os.environ.get("DST_GRAFANA", "http://grafana:3003").rstrip("/")
+DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
 h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}

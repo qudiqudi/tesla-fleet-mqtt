@@ -5,7 +5,7 @@ MariaDB `tesla` DB (drives, charges) with original timestamps.
 
 Reads teslalogger-db (TL_DB_*), writes our DB (DB_*). Idempotent (unique vin+start_ts,
 source='backfill'). Run in the tools container:
-  docker exec tesla-tools python scripts/backfill-teslalogger.py
+  docker exec tesla-tools python migration/backfill-teslalogger.py
 """
 import os
 import sys
