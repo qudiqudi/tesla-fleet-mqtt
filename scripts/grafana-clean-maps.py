@@ -32,13 +32,17 @@ def clean_panel(p):
         p["options"] = {"basemap": {"type": "osm-standard"}, "view": {"id": "fit"},
                         "layers": [{"type": "markers",
                                     "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
-                                    "config": {"size": {"fixed": 4}},
+                                    "config": {"size": {"fixed": 4}, "showLegend": False},
                                     "tooltip": True}]}
-    # Hide the map layer legend ("Layer 1" box). Idempotent.
+    # Hide the per-layer legend ("Layer 1" box). It lives on each layer's config, not
+    # a top-level option. Drop any earlier bogus top-level legend key. Idempotent.
     opts = p.setdefault("options", {})
-    if opts.get("legend", {}).get("show") is not False:
-        opts["legend"] = {"show": False}
-        n += 1
+    if "legend" in opts:
+        opts.pop("legend"); n += 1
+    for layer in opts.get("layers", []):
+        cfg = layer.setdefault("config", {})
+        if cfg.get("showLegend") is not False:
+            cfg["showLegend"] = False; n += 1
     return n
 
 

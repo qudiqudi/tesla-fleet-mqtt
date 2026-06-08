@@ -209,10 +209,10 @@ def to_piechart(p):
 
 def to_geomap(p):
     p["options"] = {"basemap": {"type": "osm-standard"}, "view": {"id": "fit"},
-                    "legend": {"show": False},
                     "layers": [{"type": "markers",
                                 "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
-                                "config": {"size": {"fixed": 4}}, "tooltip": True}]}
+                                "config": {"size": {"fixed": 4}, "showLegend": False},
+                                "tooltip": True}]}
     fc(p)
     p["type"] = "geomap"
     strip(p, MAP_KEYS)
