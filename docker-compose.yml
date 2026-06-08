@@ -92,7 +92,6 @@ services:
   tesla-cmd-bridge:
     <<: *common
     build: ${STACK_DIR:-.}/bridge
-    image: tesla-cmd-bridge:local
     container_name: tesla-cmd-bridge
     user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
