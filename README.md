@@ -119,6 +119,16 @@ It reuses your existing docker network (so these containers reach your broker an
 - Route `PARTNER_DOMAIN` to `tesla-pubkey` (or serve the key file from your existing setup).
 - Set `PUID`/`PGID` to match your stack.
 
+## Deploying with Dockhand / Dockge / Komodo
+
+This is a standard git-syncable compose stack, so any of these work:
+
+1. Add a Git stack pointing at this repo, branch `main`, compose file `docker-compose.yml`.
+2. Provide config. Simplest: create a `.env` in the stack directory from `.env.example` — Compose reads it natively, the helper scripts read the same file, and it's gitignored so syncs won't clobber it. (You can also use the tool's env panel; Dockhand keeps those in a separate `.env.dockhand`.)
+3. Generate keys on the host in the stack directory — `bash scripts/generate-keys.sh` and `bash scripts/setup-broker-user.sh`. These need a host shell (openssl), and the generated `keys/ proxy/ certs/ pubkey/` are gitignored, so git sync preserves them.
+4. Existing reverse proxy or shared broker? Copy `examples/existing-stack/docker-compose.override.yml` to the stack root (Compose and these tools auto-merge `docker-compose.override.yml`) and set the matching env (`MQTT_HOST`, `PUID`/`PGID`, `TELEMETRY_BIND`).
+5. Deploy, then run `bash scripts/register-telemetry.sh` once.
+
 ## Troubleshooting (lessons learned)
 
 - "This endpoint must be called through the Vehicle Command HTTP Proxy" — `fleet_telemetry_config` and commands are signed; `register-telemetry.sh` already routes through the proxy.
