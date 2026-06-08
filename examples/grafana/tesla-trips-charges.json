@@ -1,0 +1,93 @@
+{
+  "__inputs": [
+    { "name": "DS_MARIADB_TESLA", "label": "MariaDB (tesla)", "type": "datasource", "pluginId": "mysql", "pluginName": "MySQL" }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "mysql", "name": "MySQL", "version": "1.0.0" }
+  ],
+  "title": "Tesla Trips & Charges",
+  "uid": "tesla-trips-charges",
+  "tags": ["tesla"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": { "from": "now-1y", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "vin", "label": "Vehicle", "type": "query",
+        "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+        "query": "SELECT DISTINCT vin FROM drives", "refresh": 1, "includeAll": false, "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Total Distance", "type": "stat",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "lengthkm", "decimals": 0 }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT SUM(distance_km) AS value FROM drives WHERE vin='${vin}' AND $__timeFilter(start_ts)" } ]
+    },
+    {
+      "title": "Trips", "type": "stat",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT COUNT(*) AS value FROM drives WHERE vin='${vin}' AND $__timeFilter(start_ts)" } ]
+    },
+    {
+      "title": "Energy Charged", "type": "stat",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "kwatth", "decimals": 0 }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT SUM(energy_added_kwh) AS value FROM charges WHERE vin='${vin}' AND $__timeFilter(start_ts)" } ]
+    },
+    {
+      "title": "Charge Sessions", "type": "stat",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT COUNT(*) AS value FROM charges WHERE vin='${vin}' AND $__timeFilter(start_ts)" } ]
+    },
+    {
+      "title": "Avg consumption (SoC%/100km)", "type": "stat",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": { "defaults": { "decimals": 1 }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT 100*SUM(soc_used)/NULLIF(SUM(distance_km),0) AS value FROM drives WHERE vin='${vin}' AND $__timeFilter(start_ts) AND distance_km>1" } ]
+    },
+    {
+      "title": "Distance per day", "type": "timeseries",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "lengthkm", "custom": { "drawStyle": "bars", "fillOpacity": 60 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT $__timeGroup(start_ts,'1d') AS time, SUM(distance_km) AS 'km' FROM drives WHERE vin='${vin}' AND $__timeFilter(start_ts) GROUP BY 1 ORDER BY 1" } ]
+    },
+    {
+      "title": "Energy charged per day", "type": "timeseries",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "unit": "kwatth", "custom": { "drawStyle": "bars", "fillOpacity": 60 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT $__timeGroup(start_ts,'1d') AS time, SUM(energy_added_kwh) AS 'kWh' FROM charges WHERE vin='${vin}' AND $__timeFilter(start_ts) GROUP BY 1 ORDER BY 1" } ]
+    },
+    {
+      "title": "Recent drives", "type": "table",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 11, "w": 12, "x": 0, "y": 12 },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT start_ts AS 'Start', ROUND(distance_km,1) AS 'km', ROUND(duration_s/60,0) AS 'min', ROUND(avg_speed,0) AS 'km/h', ROUND(soc_used,0) AS 'SoC%' FROM drives WHERE vin='${vin}' AND $__timeFilter(start_ts) ORDER BY start_ts DESC LIMIT 200" } ]
+    },
+    {
+      "title": "Recent charges", "type": "table",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 11, "w": 12, "x": 12, "y": 12 },
+      "targets": [ { "refId": "A", "format": "table", "rawSql": "SELECT start_ts AS 'Start', ROUND(energy_added_kwh,1) AS 'kWh', ROUND(soc_added,0) AS 'SoC+', ROUND(max_power_kw,0) AS 'kW', charger_type AS 'Type' FROM charges WHERE vin='${vin}' AND $__timeFilter(start_ts) ORDER BY start_ts DESC LIMIT 200" } ]
+    },
+    {
+      "title": "Vampire drain (SoC lost while parked, per day)", "type": "timeseries",
+      "datasource": { "type": "mysql", "uid": "${DS_MARIADB_TESLA}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "percent", "custom": { "drawStyle": "bars", "fillOpacity": 50 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "format": "time_series", "rawSql": "SELECT $__timeGroup(start_ts,'1d') AS time, SUM(soc_loss) AS 'SoC lost' FROM parks WHERE vin='${vin}' AND $__timeFilter(start_ts) AND soc_loss>0 GROUP BY 1 ORDER BY 1" } ]
+    }
+  ]
+}
