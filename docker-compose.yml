@@ -185,6 +185,11 @@ services:
       # (the tesla-ha-discovery service points HA entities at these). 1=on, 0=off.
       HA_PUBLISH: ${HA_PUBLISH:-1}
       # geofencing is HA-native: tlwriter publishes GPS and HA's zones resolve home/work/etc.
+      # reverse-geocode drive start/end into pos.address (the trip view / Trip dashboard show it).
+      # Uses public OSM Nominatim by default (throttled to its 1 req/s policy); point at your own
+      # Nominatim with NOMINATIM_URL if you have one. Set TLW_GEOCODE=0 to disable.
+      TLW_GEOCODE: ${TLW_GEOCODE:-1}
+      NOMINATIM_URL: ${NOMINATIM_URL:-https://nominatim.openstreetmap.org/reverse}
 
   # Home Assistant MQTT discovery: makes the car appear in HA as a device with sensors,
   # switches, numbers and a device tracker, fed by the telemetry stream + tlwriter's ha/*
