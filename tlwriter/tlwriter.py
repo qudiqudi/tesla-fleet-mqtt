@@ -166,6 +166,13 @@ def ideal_range(vin):
     return lv(vin, "IdealBatteryRange") if lv(vin, "IdealBatteryRange") is not None else lv(vin, "RatedRange")
 
 
+def cell_temp(vin):
+    # representative battery "cell" temperature from the module min/max (teslalogger's Cell
+    # Temperature panel reads it from can id=2)
+    vals = [x for x in (lv(vin, "ModuleTempMin"), lv(vin, "ModuleTempMax")) if isinstance(x, (int, float))]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
 def est_range(vin):
     return lv(vin, "EstBatteryRange") if lv(vin, "EstBatteryRange") is not None else lv(vin, "RatedRange")
 
@@ -232,6 +239,9 @@ def write_pos(vin, ts):
          ideal_range(vin), lv(vin, "OutsideTemp"), lv(vin, "InsideTemp"), lv(vin, "Soc"),
          truthy_state(lv(vin, "SentryMode"), "Armed", "Aware", "Panic"),
          truthy_state(lv(vin, "HvacPower"), "On"), est_range(vin), car_id))
+    ct = cell_temp(vin)
+    if ct is not None:
+        execute("INSERT INTO can (datum,id,val,CarID) VALUES (%s,2,%s,%s)", (dts(ts), ct, car_id))
     if pid:
         s = st(vin)
         s["last_pos_id"] = pid
