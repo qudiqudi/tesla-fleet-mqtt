@@ -109,8 +109,10 @@ services:
       TESLA_CLIENT_SECRET: ${TESLA_CLIENT_SECRET}
       TESLA_REFRESH_TOKEN: ${TESLA_REFRESH_TOKEN}
       TESLA_AUTH_URL: ${TESLA_AUTH_URL}
+      REFRESH_TOKEN_FILE: /data/refresh_token
     volumes:
       - ${STACK_DIR:-.}/proxy/tls-cert.pem:/certs/proxy-ca.pem:ro
+      - tesla-bridge-data:/data
 
   # Optional historian: streams MQTT telemetry into InfluxDB 2.x. Enable with COMPOSE_PROFILES=history.
   tesla-influx:
@@ -230,3 +232,6 @@ services:
 networks:
   tesla:
     name: tesla
+
+volumes:
+  tesla-bridge-data:
