@@ -191,12 +191,13 @@ services:
 
   # Home Assistant MQTT discovery: makes the car appear in HA as a device with sensors,
   # switches, numbers and a device tracker, fed by the telemetry stream + tlwriter's ha/*
-  # topics + the command bridge. Stateless; republishes periodically. Profile "history".
+  # topics + the command bridge. Stateless; republishes periodically. Profile "ha" (also
+  # enable "history" so tlwriter publishes the derived ha/* topics these entities read).
   tesla-ha-discovery:
     <<: *common
     build: ${STACK_DIR:-.}/discovery
     container_name: tesla-ha-discovery
-    profiles: ["history"]
+    profiles: ["ha"]
     depends_on:
       - tesla-fleet-telemetry
     environment:

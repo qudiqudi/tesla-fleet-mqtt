@@ -108,9 +108,11 @@ bash scripts/send-cmd.sh charge_start
 
 ## Home Assistant
 
-The `tesla-ha-discovery` service (profile `history`) publishes Home Assistant MQTT discovery
+The `tesla-ha-discovery` service (profile `ha`) publishes Home Assistant MQTT discovery
 configs, so the car shows up as a device with sensors, binary sensors, switches, numbers and a
-device tracker — no YAML in HA. It needs HA pointed at the same broker (MQTT integration).
+device tracker — no YAML in HA. Enable profiles `history,ha` (`history` runs tlwriter, which
+publishes the derived `ha/*` topics the entities read) and point HA at the same broker (MQTT
+integration).
 
 Two pieces feed the entities:
 - `tesla-tlwriter` with `HA_PUBLISH=1` (default) publishes derived/normalised live state to
