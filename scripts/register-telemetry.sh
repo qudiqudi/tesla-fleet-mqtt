@@ -61,6 +61,7 @@ jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
       SentryMode:      {interval_seconds: 30},
       DoorState:       {interval_seconds: 5},
       Locked:          {interval_seconds: 10},
+      SettingDistanceUnit: {interval_seconds: 30},
       TpmsPressureFl:  {interval_seconds: 300},
       TpmsPressureFr:  {interval_seconds: 300},
       TpmsPressureRl:  {interval_seconds: 300},

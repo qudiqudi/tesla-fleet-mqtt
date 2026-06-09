@@ -47,6 +47,13 @@ POS_CHARGE_INTERVAL = float(os.environ.get("POS_CHARGE_INTERVAL", "60"))
 POS_IDLE_INTERVAL = float(os.environ.get("POS_IDLE_INTERVAL", "600"))
 CHARGE_ROW_INTERVAL = float(os.environ.get("CHARGE_ROW_INTERVAL", "60"))
 
+MI_TO_KM = 1.609344
+# Distance/speed fields stream in the car's display unit; the teslalogger schema stores
+# km / km-h, so convert when the car reports miles. SettingDistanceUnit drives it (register
+# it in telemetry); TLW_ASSUME_UNIT ("metric"|"imperial") is the fallback until it streams.
+DIST_FIELDS = {"VehicleSpeed", "Odometer", "RatedRange", "IdealBatteryRange", "EstBatteryRange"}
+ASSUME_IMPERIAL = os.environ.get("TLW_ASSUME_UNIT", "metric").lower().startswith(("imp", "mi"))
+
 lock = threading.Lock()
 latest = {}   # vin -> {field: value, "_ts": ts}
 active = {}   # vin -> {"drive": ts, "charge": ts}
@@ -100,6 +107,13 @@ def execute(sql, params):
 
 def lv(vin, f):
     return latest.get(vin, {}).get(f)
+
+
+def is_imperial(L):
+    u = L.get("SettingDistanceUnit")
+    if u is None:
+        return ASSUME_IMPERIAL
+    return "mi" in str(u).lower()   # "Miles"/"DistanceUnitMiles" -> True; km variants have no "mi"
 
 
 def power_kw(vin):
@@ -309,6 +323,10 @@ def on_message(client, userdata, msg):
         L["_ts"] = t
         active.setdefault(vin, {})
         s = st(vin)
+        if field == "SettingDistanceUnit" and L.get("SettingDistanceUnit") != val:
+            log("%s distance unit -> %s" % (vin, val))
+        if field in DIST_FIELDS and isinstance(val, (int, float)) and is_imperial(L):
+            val = val * MI_TO_KM   # normalise miles/(mph) to km/(km-h) for the teslalogger schema
         if field == "Location" and isinstance(val, dict):
             L["Latitude"] = val.get("latitude"); L["Longitude"] = val.get("longitude")
             return
