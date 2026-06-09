@@ -16,8 +16,11 @@ Model (mirrors teslalogger):
 """
 import json
 import os
+import queue
 import threading
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
@@ -55,6 +58,16 @@ REPLAY_GRACE = float(os.environ.get("REPLAY_GRACE", "10"))  # ignore retained re
 HA_PUBLISH = os.environ.get("HA_PUBLISH", "0").lower() in ("1", "true", "yes")
 # Geofencing is left to Home Assistant: tlwriter publishes the car's GPS and HA's own zones
 # resolve home/work/etc. So there are no geofence coords here.
+
+# Reverse-geocode each drive's start/end into pos.address (the teslalogger `trip` view reads
+# pos_start.address / pos_end.address). Off-thread, throttled to OSM Nominatim's 1 req/s policy
+# with an identifying User-Agent; failures are logged and skipped so they never block logging.
+GEOCODE = os.environ.get("TLW_GEOCODE", "1").lower() in ("1", "true", "yes")
+NOMINATIM_URL = os.environ.get("NOMINATIM_URL", "https://nominatim.openstreetmap.org/reverse")
+GEOCODE_UA = os.environ.get("GEOCODE_USER_AGENT",
+                            "tesla-fleet-mqtt/1.0 (https://github.com/qudiqudi/tesla-fleet-mqtt)")
+GEOCODE_MIN_INTERVAL = float(os.environ.get("GEOCODE_MIN_INTERVAL", "1.1"))  # >=1s per OSM policy
+GEOCODE_BACKFILL_LIMIT = int(os.environ.get("GEOCODE_BACKFILL_LIMIT", "200"))
 
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
@@ -121,6 +134,84 @@ def execute(sql, params):
             log("db error: %s" % e); _db = None; return None
     log("db write failed after reconnect")
     return None
+
+
+# ---- reverse geocoding ----------------------------------------------------
+# The worker runs on its own thread + DB connection (pymysql isn't thread-safe, and the OSM
+# call can take seconds — must not touch the main connection or hold up MQTT processing).
+geocode_q = queue.Queue()
+_geo_db = None
+_geo_last = 0.0
+
+
+def _geo_conn():
+    global _geo_db
+    if _geo_db is None:
+        _geo_db = pymysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS,
+                                  database=DB_NAME, autocommit=True, connect_timeout=10)
+    return _geo_db
+
+
+def geocode_address(lat, lng):
+    params = urllib.parse.urlencode({"lat": "%.6f" % lat, "lon": "%.6f" % lng,
+                                     "format": "jsonv2", "zoom": "18", "addressdetails": "1"})
+    req = urllib.request.Request(NOMINATIM_URL + "?" + params, headers={"User-Agent": GEOCODE_UA})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        a = (json.loads(r.read().decode("utf-8", "replace")) or {}).get("address", {})
+    city = a.get("city") or a.get("town") or a.get("village") or a.get("municipality") or a.get("county") or ""
+    left = ("%s %s" % (a.get("postcode", ""), city)).strip()
+    right = ("%s %s" % (a.get("road", ""), a.get("house_number", ""))).strip()
+    return ", ".join(p for p in (left, right) if p)[:255]
+
+
+def geocode_worker():
+    global _geo_db, _geo_last
+    while True:
+        pos_id, lat, lng = geocode_q.get()
+        try:
+            wait = GEOCODE_MIN_INTERVAL - (now() - _geo_last)
+            if wait > 0:
+                time.sleep(wait)
+            _geo_last = now()   # mark the attempt up front so failures are throttled too
+            addr = geocode_address(lat, lng)
+            if addr:
+                with _geo_conn().cursor() as cur:
+                    cur.execute("UPDATE pos SET address=%s WHERE id=%s AND (address IS NULL OR address='')",
+                                (addr, pos_id))
+        except (pymysql.err.OperationalError, pymysql.err.InterfaceError):
+            _geo_db = None  # drop the stale connection; reconnect on the next item
+        except Exception as e:
+            log("geocode: pos %s: %s" % (pos_id, e))
+        finally:
+            geocode_q.task_done()
+
+
+def queue_geocode(vin, pos_id):
+    if not GEOCODE or pos_id is None:
+        return
+    lat, lng = lv(vin, "Latitude"), lv(vin, "Longitude")
+    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+        geocode_q.put((pos_id, lat, lng))
+
+
+def backfill_geocode():
+    # Geocode existing drive start/end positions that have no address yet (e.g. this writer's own
+    # drives, which teslalogger never geocoded). One-shot at startup, capped, drained slowly.
+    if not GEOCODE:
+        return
+    try:
+        with _geo_conn().cursor() as cur:
+            cur.execute(
+                "SELECT p.id, p.lat, p.lng FROM pos p JOIN drivestate d ON p.id IN (d.StartPos, d.EndPos) "
+                "WHERE d.CarID=%s AND p.lat IS NOT NULL AND (p.address IS NULL OR p.address='') "
+                "GROUP BY p.id ORDER BY p.id DESC LIMIT %s", (car_id, GEOCODE_BACKFILL_LIMIT))
+            rows = cur.fetchall()
+        for pid, lat, lng in rows:
+            geocode_q.put((pid, float(lat), float(lng)))
+        if rows:
+            log("geocode: backfilling %d drive positions" % len(rows))
+    except Exception as e:
+        log("geocode backfill: %s" % e)
 
 
 def lv(vin, f):
@@ -274,6 +365,7 @@ def open_drive(vin, ts):
     s["drivestate_id"] = execute(
         "INSERT INTO drivestate (StartDate,StartPos,CarID) VALUES (%s,%s,%s)",
         (dts(ts), s["last_pos_id"], car_id))
+    queue_geocode(vin, s["last_pos_id"])   # name the start of the trip
     log("%s drive start (pos %s)" % (vin, s["last_pos_id"]))
 
 
@@ -290,6 +382,7 @@ def close_drive(vin, ts):
              s.get("pmax"), s.get("pmin"), pavg,
              lv(vin, "TpmsPressureFl"), lv(vin, "TpmsPressureFr"),
              lv(vin, "TpmsPressureRl"), lv(vin, "TpmsPressureRr"), s["drivestate_id"]))
+    queue_geocode(vin, s["last_pos_id"])   # name the end of the trip (EndPos)
     log("%s drive end" % vin)
     s["drivestate_id"] = None
 
@@ -598,6 +691,9 @@ def main():
             unit_ref[VIN] = float(r2[0]); log("odometer reference: %.0f km" % unit_ref[VIN])
     resume_sessions()   # continue open sessions across the restart instead of orphaning them
     threading.Thread(target=ticker, daemon=True).start()
+    if GEOCODE:
+        backfill_geocode()   # enqueue existing un-addressed drives (uses the geo conn before the worker)
+        threading.Thread(target=geocode_worker, daemon=True).start()
     if st(VIN)["vstate"] is None:   # nothing open to resume -> seed asleep so there's one state row
         with lock:
             set_vstate(VIN, "asleep", now())

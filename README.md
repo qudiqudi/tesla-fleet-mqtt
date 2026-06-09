@@ -140,6 +140,11 @@ version + update status, windows, heading, time-to-full-charge and fast-charger 
 Zones) and they resolve from the coordinates; there are no stack-side geofence entities.
 `country_code` has no telemetry source and isn't published.
 
+tlwriter reverse-geocodes each drive's start/end into `pos.address` (public OSM Nominatim by
+default, throttled to 1 req/s; `TLW_GEOCODE=0` to disable, `NOMINATIM_URL` for your own instance),
+so named start/end locations show on the teslalogger Trip dashboard like before. Existing
+un-addressed drives are backfilled once at startup.
+
 Set the device identity in `.env`:
 ```
 HA_DEVICE_NAME=Tesla
