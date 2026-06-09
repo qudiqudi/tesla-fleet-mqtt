@@ -23,6 +23,12 @@ access_token() {
     t="$(cat "$f" 2>/dev/null)"
     if [ -n "$t" ]; then printf '%s' "$t"; return 0; fi
   fi
+  # In automated contexts (the on-deploy registrar) we must NOT refresh directly — that would
+  # fork the refresh-token lineage. Require the shared token instead of falling back.
+  if [ -n "${ACCESS_TOKEN_REQUIRED:-}" ]; then
+    echo "access_token: required shared bridge token missing at $f (refusing to fork the lineage)" >&2
+    return 1
+  fi
   echo "access_token: no shared bridge token at $f -> refreshing directly (standalone; this rotates the token)" >&2
   need TESLA_CLIENT_ID TESLA_REFRESH_TOKEN TESLA_AUTH_URL
   curl -s "$TESLA_AUTH_URL" \
