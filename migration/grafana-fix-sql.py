@@ -2,7 +2,7 @@
 """
 Fix teslalogger SQL that breaks on current MariaDB/Grafana. These queries also fail on
 teslalogger's own (watchtower-updated) Grafana -- they are query bugs, not migration
-regressions. Applies three idempotent rewrites to every panel target in the folder:
+regressions. Applies four idempotent rewrites to every panel target in the folder:
 
   1. `ORDER BY time_sec[ ASC|DESC]`  -> `ORDER BY 1`
      teslalogger selects `$__time(col)` (aliased "time") as the first column but orders by
@@ -49,6 +49,13 @@ def fix_sql(sql):
         sql = re.sub(r'\$__time\(%s\)' % re.escape(col), bucket + ' AS time', sql)
         sql = re.sub(r'(?i)order\s+by\s+%s(\s+(?:asc|desc))?' % re.escape(col),
                      lambda mm: 'ORDER BY 1' + (mm.group(1) or ''), sql)
+
+    # 4. The Trip dashboards filter by `Start_address like '%$Textfilter%' or End_address like ...`.
+    #    tlwriter doesn't reverse-geocode, so those columns are NULL on its drives, and
+    #    `NULL LIKE '%%'` is NULL (not true) -> every un-geocoded trip is silently hidden, even
+    #    with an empty filter. COALESCE to '' so an empty filter still matches NULL-address rows.
+    sql = re.sub(r"(?i)\b(Start_address|End_address)\s+like\b",
+                 lambda m: "COALESCE(%s,'') like" % m.group(1), sql)
     return sql if sql != orig else None
 
 
