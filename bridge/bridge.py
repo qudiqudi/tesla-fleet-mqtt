@@ -9,8 +9,11 @@ Payload: JSON body for the command, or empty for none.
          {}                        -> tesla/cmd/auto_conditioning_start
 Result:  published to <base>/cmd_result/<command> as {"status": <int>, "resp": <str>}
 
-The long-lived refresh token is read from the environment; the bridge exchanges it
-for short-lived access tokens and refreshes on expiry / 401.
+The refresh token is seeded from the environment; Tesla rotates it on every refresh,
+so the bridge captures the new refresh token from each response and persists it to
+REFRESH_TOKEN_FILE (a private volume), loading that on startup in preference to the env
+value. Without this, recreating the container (e.g. a redeploy) falls back to the stale
+env token and 401s.
 """
 import json
 import os
@@ -36,6 +39,7 @@ CLIENT_ID = os.environ["TESLA_CLIENT_ID"]
 CLIENT_SECRET = os.environ.get("TESLA_CLIENT_SECRET", "")
 REFRESH_TOKEN = os.environ["TESLA_REFRESH_TOKEN"]
 AUTH_URL = os.environ.get("TESLA_AUTH_URL", "https://auth.tesla.com/oauth2/v3/token")
+TOKEN_FILE = os.environ.get("REFRESH_TOKEN_FILE", "/data/refresh_token")
 
 _token_lock = threading.Lock()
 _access_token = None
@@ -46,8 +50,34 @@ def log(*a):
     print(*a, flush=True)
 
 
+def _load_persisted_token():
+    """Prefer the last rotated token on disk over the (possibly stale) env seed."""
+    global REFRESH_TOKEN
+    try:
+        with open(TOKEN_FILE) as f:
+            t = f.read().strip()
+        if t and t != REFRESH_TOKEN:
+            REFRESH_TOKEN = t
+            log("auth: using rotated refresh token from %s" % TOKEN_FILE)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log("auth: could not read %s: %s" % (TOKEN_FILE, e))
+
+
+def _persist_token(t):
+    try:
+        tmp = TOKEN_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(t)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, TOKEN_FILE)
+    except OSError as e:
+        log("auth: could not persist rotated token to %s: %s" % (TOKEN_FILE, e))
+
+
 def _refresh_token():
-    global _access_token, _token_expiry
+    global _access_token, _token_expiry, REFRESH_TOKEN
     data = {
         "grant_type": "refresh_token",
         "client_id": CLIENT_ID,
@@ -56,10 +86,17 @@ def _refresh_token():
     if CLIENT_SECRET:
         data["client_secret"] = CLIENT_SECRET
     r = requests.post(AUTH_URL, data=data, timeout=30)
+    if not r.ok:
+        log("auth: token endpoint %s: %s" % (r.status_code, r.text[:200]))
     r.raise_for_status()
     j = r.json()
     _access_token = j["access_token"]
     _token_expiry = time.time() + int(j.get("expires_in", 28800)) - 60
+    new_rt = j.get("refresh_token")
+    if new_rt and new_rt != REFRESH_TOKEN:
+        REFRESH_TOKEN = new_rt
+        _persist_token(new_rt)
+        log("auth: stored rotated refresh token")
     log("auth: refreshed access token, valid ~%ds" % int(j.get("expires_in", 28800)))
     return _access_token
 
@@ -119,6 +156,7 @@ def on_message(client, userdata, msg):
 
 
 def main():
+    _load_persisted_token()
     try:
         get_token(force=True)
     except Exception as e:
