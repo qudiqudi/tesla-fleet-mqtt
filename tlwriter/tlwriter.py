@@ -345,9 +345,11 @@ def on_message(client, userdata, msg):
     except json.JSONDecodeError:
         val = raw
     t = now()
+    retained = bool(getattr(msg, "retain", False))
     with lock:
         L = latest.setdefault(vin, {})
-        L["_ts"] = t
+        if not retained:   # retained = the broker's last-known value on (re)subscribe, not live
+            L["_ts"] = t   # activity; counting it as liveness falsely marks an asleep car online
         active.setdefault(vin, {})
         s = st(vin)
         if field == "SettingDistanceUnit" and L.get("SettingDistanceUnit") != val:
@@ -360,6 +362,8 @@ def on_message(client, userdata, msg):
             L["Latitude"] = val.get("latitude"); L["Longitude"] = val.get("longitude")
             return
         L[field] = val
+        if retained:   # value kept for last-known lookups, but no drive/charge activity from it
+            return
         if field == "VehicleSpeed" and isinstance(val, (int, float)) and val > DRIVE_SPEED_MIN:
             active[vin]["drive"] = t
             if val > s["max_speed"]:
