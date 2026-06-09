@@ -232,6 +232,36 @@ def needs_graph(p):
                                                       and "alignAsTable" in (p.get("legend") or {}))
 
 
+def fix_xychart(p):
+    """Grafana 11.3+ rewrote xychart: old options used `seriesMapping`/`dims` and bare
+    field-name strings (series[].x/y), which the new panel ignores -> empty plot. Rebuild
+    into the new schema: mapping=manual, series[].{x,y,color} = {matcher: byName}."""
+    o = p.get("options") or {}
+    old = (o.get("series") or [{}])[0] if o.get("series") else {}
+    dims = o.get("dims") or {}
+    x = old.get("x") if isinstance(old.get("x"), str) else dims.get("x")
+    y = old.get("y") if isinstance(old.get("y"), str) else None
+    pc = old.get("pointColor") or {}
+    colorf = pc.get("field") if isinstance(pc, dict) else None
+
+    def m(field):
+        return {"matcher": {"id": "byName", "options": field}}
+    s = {}
+    if x:
+        s["x"] = m(x)
+    if y:
+        s["y"] = m(y)
+    if colorf:
+        s["color"] = m(colorf)
+    p["options"] = {
+        "mapping": "manual",
+        "series": [s] if s else [],
+        "legend": o.get("legend", {"showLegend": False, "displayMode": "list",
+                                    "placement": "bottom", "calcs": []}),
+        "tooltip": o.get("tooltip", {"mode": "single", "sort": "none"}),
+    }
+
+
 def convert(panels):
     n = 0
     for p in panels:
@@ -251,6 +281,8 @@ def convert(panels):
             graph_to_timeseries(p); n += 1
         elif t == "graph":
             p["type"] = "timeseries"; n += 1
+        elif t == "xychart" and ("seriesMapping" in opts or "dims" in opts):
+            fix_xychart(p); n += 1
         if "panels" in p:
             n += convert(p["panels"])
     return n
