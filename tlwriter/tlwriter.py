@@ -46,6 +46,7 @@ POS_DRIVE_INTERVAL = float(os.environ.get("POS_DRIVE_INTERVAL", "10"))
 POS_CHARGE_INTERVAL = float(os.environ.get("POS_CHARGE_INTERVAL", "60"))
 POS_IDLE_INTERVAL = float(os.environ.get("POS_IDLE_INTERVAL", "600"))
 CHARGE_ROW_INTERVAL = float(os.environ.get("CHARGE_ROW_INTERVAL", "60"))
+REPLAY_GRACE = float(os.environ.get("REPLAY_GRACE", "10"))  # ignore retained replay for Ns after connect
 
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
@@ -324,9 +325,14 @@ def set_mode(vin, mode, ts):
 
 # ---- mqtt -----------------------------------------------------------------
 
+_connect_ts = 0.0
+
+
 def on_connect(client, userdata, flags, reason_code, properties=None):
+    global _connect_ts
     if reason_code != 0:
         log("mqtt: connect failed: %s" % reason_code); return
+    _connect_ts = now()
     client.subscribe("%s/+/v/#" % BASE, qos=1)
     log("mqtt: connected, writing teslalogger schema -> %s@%s/%s (CarID=%s)" % (DB_USER, DB_HOST, DB_NAME, car_id))
 
@@ -345,11 +351,14 @@ def on_message(client, userdata, msg):
     except json.JSONDecodeError:
         val = raw
     t = now()
-    retained = bool(getattr(msg, "retain", False))
+    # The publisher retains every message, so the broker REPLAYS the last value of each topic
+    # on (re)subscribe. That replay (a burst right after connect) must not count as liveness, or
+    # an asleep car looks online. A retained message arriving later is just normal live data.
+    replay = bool(getattr(msg, "retain", False)) and (t - _connect_ts) < REPLAY_GRACE
     with lock:
         L = latest.setdefault(vin, {})
-        if not retained:   # retained = the broker's last-known value on (re)subscribe, not live
-            L["_ts"] = t   # activity; counting it as liveness falsely marks an asleep car online
+        if not replay:
+            L["_ts"] = t
         active.setdefault(vin, {})
         s = st(vin)
         if field == "SettingDistanceUnit" and L.get("SettingDistanceUnit") != val:
@@ -362,7 +371,7 @@ def on_message(client, userdata, msg):
             L["Latitude"] = val.get("latitude"); L["Longitude"] = val.get("longitude")
             return
         L[field] = val
-        if retained:   # value kept for last-known lookups, but no drive/charge activity from it
+        if replay:   # value kept for last-known lookups, but no drive/charge activity from a replay
             return
         if field == "VehicleSpeed" and isinstance(val, (int, float)) and val > DRIVE_SPEED_MIN:
             active[vin]["drive"] = t
