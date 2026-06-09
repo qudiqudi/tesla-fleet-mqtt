@@ -3,14 +3,10 @@
 # bash scripts/telemetry-status.sh
 set -uo pipefail
 . "$(dirname "$0")/_env.sh"
-need TESLA_CLIENT_ID TESLA_CLIENT_SECRET TESLA_REFRESH_TOKEN TESLA_VIN FLEET_API_BASE TESLA_AUTH_URL
+need TESLA_VIN FLEET_API_BASE TESLA_AUTH_URL
 command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 
-ACCESS=$(curl -s "$TESLA_AUTH_URL" \
-  --data-urlencode grant_type=refresh_token \
-  --data-urlencode "client_id=$TESLA_CLIENT_ID" \
-  --data-urlencode "client_secret=$TESLA_CLIENT_SECRET" \
-  --data-urlencode "refresh_token=$TESLA_REFRESH_TOKEN" | jq -r '.access_token // empty')
+ACCESS=$(access_token)
 [ -z "$ACCESS" ] && { echo "no access token"; exit 1; }
 AUTH="Authorization: Bearer $ACCESS"
 

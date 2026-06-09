@@ -42,9 +42,16 @@ PROXY_CACERT = os.environ.get("PROXY_CACERT", "/certs/proxy-ca.pem")
 VIN = os.environ["TESLA_VIN"]
 CLIENT_ID = os.environ["TESLA_CLIENT_ID"]
 CLIENT_SECRET = os.environ.get("TESLA_CLIENT_SECRET", "")
-REFRESH_TOKEN = os.environ["TESLA_REFRESH_TOKEN"]
+ENV_REFRESH_TOKEN = os.environ["TESLA_REFRESH_TOKEN"]   # the seed from .env (re-auth updates this)
+REFRESH_TOKEN = ENV_REFRESH_TOKEN                       # current working token; persisted one wins if present
 AUTH_URL = os.environ.get("TESLA_AUTH_URL", "https://auth.tesla.com/oauth2/v3/token")
 TOKEN_FILE = os.environ.get("REFRESH_TOKEN_FILE", "/data/refresh_token")
+# The bridge is the SINGLE owner of the rotating refresh-token lineage. It writes the current
+# access token here so the helper scripts (register-telemetry, telemetry-status) can use it
+# instead of running their own refresh_token grant — independent refreshers fork the lineage
+# and Tesla invalidates all but the newest, which is what kept killing commands.
+ACCESS_TOKEN_FILE = os.environ.get("ACCESS_TOKEN_FILE", "/data/access_token")
+REFRESH_AHEAD = float(os.environ.get("REFRESH_AHEAD_SECONDS", "1800"))  # refresh this long before expiry
 
 _token_lock = threading.Lock()
 _access_token = None
@@ -96,40 +103,51 @@ def _load_persisted_token():
         log("auth: could not read %s: %s" % (TOKEN_FILE, e))
 
 
-def _persist_token(t):
+def _write_private(path, content):
     try:
-        tmp = TOKEN_FILE + ".tmp"
+        tmp = path + ".tmp"
         with open(tmp, "w") as f:
-            f.write(t)
+            f.write(content)
         os.chmod(tmp, 0o600)
-        os.replace(tmp, TOKEN_FILE)
+        os.replace(tmp, path)
     except OSError as e:
-        log("auth: could not persist rotated token to %s: %s" % (TOKEN_FILE, e))
+        log("auth: could not write %s: %s" % (path, e))
+
+
+def _do_refresh(refresh_token):
+    data = {"grant_type": "refresh_token", "client_id": CLIENT_ID, "refresh_token": refresh_token}
+    if CLIENT_SECRET:
+        data["client_secret"] = CLIENT_SECRET
+    return requests.post(AUTH_URL, data=data, timeout=30)
 
 
 def _refresh_token():
     global _access_token, _token_expiry, REFRESH_TOKEN
-    data = {
-        "grant_type": "refresh_token",
-        "client_id": CLIENT_ID,
-        "refresh_token": REFRESH_TOKEN,
-    }
-    if CLIENT_SECRET:
-        data["client_secret"] = CLIENT_SECRET
-    r = requests.post(AUTH_URL, data=data, timeout=30)
-    if not r.ok:
-        log("auth: token endpoint %s: %s" % (r.status_code, r.text[:200]))
-    r.raise_for_status()
-    j = r.json()
-    _access_token = j["access_token"]
-    _token_expiry = time.time() + int(j.get("expires_in", 28800)) - 60
-    new_rt = j.get("refresh_token")
-    if new_rt and new_rt != REFRESH_TOKEN:
-        REFRESH_TOKEN = new_rt
-        _persist_token(new_rt)
-        log("auth: stored rotated refresh token")
-    log("auth: refreshed access token, valid ~%ds" % int(j.get("expires_in", 28800)))
-    return _access_token
+    # Try the current (persisted) refresh token first, then fall back to the env seed if it
+    # differs. So re-auth is just "update TESLA_REFRESH_TOKEN + redeploy": a dead persisted
+    # token self-heals from the env and the volume is re-seeded — no manual file surgery.
+    candidates = [REFRESH_TOKEN]
+    if ENV_REFRESH_TOKEN and ENV_REFRESH_TOKEN != REFRESH_TOKEN:
+        candidates.append(ENV_REFRESH_TOKEN)
+    last = None
+    for i, tok in enumerate(candidates):
+        r = _do_refresh(tok)
+        if r.ok:
+            j = r.json()
+            _access_token = j["access_token"]
+            _token_expiry = time.time() + int(j.get("expires_in", 28800)) - 60
+            new_rt = j.get("refresh_token") or tok   # Tesla rotates; keep the one we used otherwise
+            if new_rt != REFRESH_TOKEN:
+                REFRESH_TOKEN = new_rt
+                _write_private(TOKEN_FILE, new_rt)
+            _write_private(ACCESS_TOKEN_FILE, _access_token)   # share with the helper scripts
+            if i > 0:
+                log("auth: persisted refresh token failed; recovered from the env token and re-seeded %s" % TOKEN_FILE)
+            log("auth: refreshed access token, valid ~%ds" % int(j.get("expires_in", 28800)))
+            return _access_token
+        last = r
+        log("auth: refresh candidate %d/%d rejected: %s %s" % (i + 1, len(candidates), r.status_code, r.text[:160]))
+    last.raise_for_status()   # all candidates failed -> surface the last error (re-auth needed)
 
 
 def get_token(force=False):
@@ -137,6 +155,22 @@ def get_token(force=False):
         if force or _access_token is None or time.time() >= _token_expiry:
             return _refresh_token()
         return _access_token
+
+
+def _refresh_loop():
+    # Keep the access token fresh ahead of expiry so the helper scripts always read a valid
+    # one from ACCESS_TOKEN_FILE, and so the bridge isn't doing a cold refresh mid-command.
+    while True:
+        with _token_lock:
+            wait = _token_expiry - time.time() - REFRESH_AHEAD
+        if wait > 0:
+            time.sleep(min(wait, 3600))
+            continue
+        try:
+            get_token(force=True)
+        except Exception as e:
+            log("auth: background refresh error: %s" % e)
+            time.sleep(60)
 
 
 def send_command(command, body):
@@ -195,8 +229,9 @@ def main():
     try:
         get_token(force=True)
     except Exception as e:
-        log("auth: initial token refresh failed: %s" % e)
+        log("auth: initial token refresh failed (persisted + env both rejected -> re-auth needed): %s" % e)
         sys.exit(1)
+    threading.Thread(target=_refresh_loop, daemon=True).start()
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tesla-cmd-bridge")
     client.username_pw_set(MQTT_USER, MQTT_PASS)

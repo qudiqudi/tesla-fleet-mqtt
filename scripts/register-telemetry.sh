@@ -4,7 +4,7 @@
 # Requires the stack (at least tesla-http-proxy) to be running.  bash scripts/register-telemetry.sh
 set -uo pipefail
 . "$(dirname "$0")/_env.sh"
-need TESLA_CLIENT_ID TESLA_CLIENT_SECRET TESLA_REFRESH_TOKEN TESLA_VIN TELEMETRY_HOST TESLA_AUTH_URL
+need TESLA_VIN TELEMETRY_HOST TESLA_AUTH_URL
 command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 
 PROXY_CERT="$ROOT/proxy/tls-cert.pem"
@@ -19,11 +19,7 @@ SPEED_INTERVAL="${SPEED_INTERVAL:-1}"
 [ -r "$CA_CRT" ]    || { echo "Missing $CA_CRT (run generate-keys.sh)"; exit 1; }
 
 echo "Requesting access token..."
-ACCESS=$(curl -s "$TESLA_AUTH_URL" \
-  --data-urlencode grant_type=refresh_token \
-  --data-urlencode "client_id=$TESLA_CLIENT_ID" \
-  --data-urlencode "client_secret=$TESLA_CLIENT_SECRET" \
-  --data-urlencode "refresh_token=$TESLA_REFRESH_TOKEN" | jq -r '.access_token // empty')
+ACCESS=$(access_token)
 [ -z "$ACCESS" ] && { echo "failed to get access token"; exit 1; }
 
 # Field list + intervals (seconds). Location needs the vehicle_location scope.

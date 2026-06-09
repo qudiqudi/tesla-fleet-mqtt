@@ -226,12 +226,15 @@ services:
       - ${STACK_DIR:-.}/proxy:/app/proxy:ro
       - ${STACK_DIR:-.}/certs:/app/certs:ro
       - ${STACK_DIR:-.}/db:/app/db:ro
+      # read the bridge's current access token so the scripts don't refresh (and fork) the lineage
+      - tesla-bridge-data:/bridge-data:ro
     environment:
       MQTT_HOST: ${MQTT_HOST}
       MQTT_PORT: ${MQTT_PORT}
       MQTT_USER: ${MQTT_USER}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
       MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      BRIDGE_ACCESS_TOKEN_FILE: /bridge-data/access_token
       PROXY_URL: https://tesla-http-proxy:4443
       TESLA_VIN: ${TESLA_VIN}
       TESLA_CLIENT_ID: ${TESLA_CLIENT_ID}
