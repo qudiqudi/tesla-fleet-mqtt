@@ -44,6 +44,10 @@ DRIVE_SPEED_MIN = float(os.environ.get("DRIVE_SPEED_MIN", "1.0"))
 DRIVE_END_TIMEOUT = float(os.environ.get("DRIVE_END_TIMEOUT", "300"))
 CHARGE_END_TIMEOUT = float(os.environ.get("CHARGE_END_TIMEOUT", "180"))
 ONLINE_TIMEOUT = float(os.environ.get("ONLINE_TIMEOUT", "180"))
+# fleet-telemetry publishes <base>/<vin>/connectivity CONNECTED/DISCONNECTED; mark asleep this
+# long after DISCONNECTED instead of waiting out ONLINE_TIMEOUT of telemetry silence (matches
+# teslalogger's quicker sleep detection). Small grace absorbs brief reconnects.
+CONN_ASLEEP_GRACE = float(os.environ.get("CONN_ASLEEP_GRACE", "20"))
 TICK_S = float(os.environ.get("TICK_S", "10"))
 POS_DRIVE_INTERVAL = float(os.environ.get("POS_DRIVE_INTERVAL", "10"))
 POS_CHARGE_INTERVAL = float(os.environ.get("POS_CHARGE_INTERVAL", "60"))
@@ -87,6 +91,11 @@ lock = threading.Lock()
 latest = {}   # vin -> {field: value, "_ts": ts}
 active = {}   # vin -> {"drive": ts, "charge": ts}
 state = {}    # vin -> session dict
+conn_status = {}   # vin -> "CONNECTED" / "DISCONNECTED" (from the connectivity topic)
+conn_ts = {}       # vin -> when that status arrived
+_last_version = {}     # vin -> last firmware written to car_version
+_last_tpms = {}        # (vin, tireid) -> last pressure written to TPMS
+TPMS_TIRE = {"TpmsPressureFl": 1, "TpmsPressureFr": 2, "TpmsPressureRl": 3, "TpmsPressureRr": 4}
 car_id = None
 mqtt_client = None    # set in main(); used to publish HA topics
 _ha_last = {}         # name -> last published payload (publish only on change)
@@ -370,6 +379,29 @@ def write_charging_row(vin, ts):
     return cid
 
 
+def write_car_version(vin, version, ts):
+    # teslalogger's Firmware panel reads car_version; tlwriter must keep it current. On change only.
+    if not version or _last_version.get(vin) == version:
+        return
+    _last_version[vin] = version
+    execute("INSERT INTO car_version (StartDate, version, CarID) VALUES (%s,%s,%s)",
+            (dts(ts), str(version)[:50], car_id))
+    log("%s firmware -> %s" % (vin, version))
+
+
+def write_tpms(vin, field, pressure, ts):
+    # teslalogger's TPMS panels read the TPMS table (one row per tire). On change only.
+    tire = TPMS_TIRE.get(field)
+    if tire is None or not isinstance(pressure, (int, float)):
+        return
+    key = (vin, tire)
+    if _last_tpms.get(key) == pressure:
+        return
+    _last_tpms[key] = pressure
+    execute("INSERT IGNORE INTO TPMS (CarId, Datum, TireId, Pressure) VALUES (%s,%s,%s,%s)",
+            (car_id, dts(ts), tire, pressure))
+
+
 def open_drive(vin, ts):
     s = st(vin)
     if s["last_pos_id"] is None:
@@ -461,11 +493,22 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         log("mqtt: connect failed: %s" % reason_code); return
     _connect_ts = now()
     client.subscribe("%s/+/v/#" % BASE, qos=1)
+    client.subscribe("%s/+/connectivity" % BASE, qos=1)
     log("mqtt: connected, writing teslalogger schema -> %s@%s/%s (CarID=%s)" % (DB_USER, DB_HOST, DB_NAME, car_id))
 
 
 def on_message(client, userdata, msg):
     parts = msg.topic.split("/")
+    if parts[-1] == "connectivity":   # explicit online/offline signal -> faster sleep detection
+        try:
+            status = (json.loads(msg.payload.decode("utf-8", "replace")) or {}).get("Status")
+        except json.JSONDecodeError:
+            return
+        if status:
+            with lock:
+                conn_status[parts[-2]] = status
+                conn_ts[parts[-2]] = now()
+        return
     try:
         vi = parts.index("v"); vin = parts[vi - 1]; field = parts[vi + 1]
     except (ValueError, IndexError):
@@ -498,6 +541,10 @@ def on_message(client, userdata, msg):
             L["Latitude"] = val.get("latitude"); L["Longitude"] = val.get("longitude")
             return
         L[field] = val
+        if field == "Version":
+            write_car_version(vin, val, t)    # keep car_version live (also captures the current one on replay)
+        elif field in TPMS_TIRE:
+            write_tpms(vin, field, val, t)    # keep the TPMS table live
         if replay:   # value kept for last-known lookups, but no drive/charge activity from a replay
             return
         if field == "VehicleSpeed" and isinstance(val, (int, float)) and val > DRIVE_SPEED_MIN:
@@ -632,8 +679,10 @@ def ticker():
         with lock:
             for vin in list(latest.keys()):
                 L = latest[vin]
-                if (t - L.get("_ts", 0)) > ONLINE_TIMEOUT:
-                    # offline / asleep: close any open session and mark state
+                disc = conn_status.get(vin) == "DISCONNECTED" and (t - conn_ts.get(vin, 0)) > CONN_ASLEEP_GRACE
+                if (t - L.get("_ts", 0)) > ONLINE_TIMEOUT or disc:
+                    # offline / asleep: close any open session and mark state (connectivity catches
+                    # it sooner than waiting out the telemetry-silence timeout)
                     ots = L.get("_ts", t)
                     if st(vin)["mode"] is not None:
                         set_mode(vin, None, ots)
