@@ -210,9 +210,10 @@ def backfill_geocode():
             if not ids:
                 return
             placeholders = ",".join(["%s"] * len(ids))
-            cur.execute("SELECT id, lat, lng FROM pos WHERE id IN (%s) AND lat IS NOT NULL "
-                        "AND (address IS NULL OR address='') ORDER BY id DESC LIMIT %s" % placeholders,
-                        tuple(ids) + (GEOCODE_BACKFILL_LIMIT,))
+            # build the IN list by concatenation (NOT %-format), so the LIMIT %s stays a pymysql param
+            cur.execute("SELECT id, lat, lng FROM pos WHERE id IN (" + placeholders + ") "
+                        "AND lat IS NOT NULL AND (address IS NULL OR address='') "
+                        "ORDER BY id DESC LIMIT %s", tuple(ids) + (GEOCODE_BACKFILL_LIMIT,))
             rows = cur.fetchall()
         for pid, lat, lng in rows:
             geocode_q.put((pid, float(lat), float(lng)))
