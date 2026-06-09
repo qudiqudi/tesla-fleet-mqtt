@@ -76,6 +76,16 @@ _db = None
 
 def db():
     global _db
+    if _db is not None:
+        # Revive a connection the server dropped while idle (MySQL server has gone away).
+        try:
+            _db.ping(reconnect=True)
+        except Exception:
+            try:
+                _db.close()
+            except Exception:
+                pass
+            _db = None
     if _db is None:
         _db = pymysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS,
                               database=DB_NAME, autocommit=True, connect_timeout=10)
