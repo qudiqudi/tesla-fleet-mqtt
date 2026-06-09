@@ -9,8 +9,12 @@ values are read as local and every time-based panel renders ~2h off (the Status 
 online/asleep at the wrong time, etc.). Setting the datasource session tz to UTC makes Grafana
 read the UTC columns as UTC. Idempotent.
 
+Uses the numeric offset "+00:00", NOT the named zone "UTC": MariaDB only accepts named zones
+(SET time_zone='UTC') when its time-zone tables are loaded, which they usually aren't — Grafana
+then errors on every query ("db query error: query failed"). "+00:00" always works.
+
 The equivalent one-field UI change: Connections -> Data sources -> the MySQL datasource ->
-"Session timezone" = UTC (or +00:00) -> Save & test.
+"Session timezone" = +00:00 -> Save & test.
 
 Run in the tools container (admin/editor token; this stack's Grafana listens on :3003):
   docker exec -e DST_GRAFANA_TOKEN=... -e DST_GRAFANA=http://grafana:3003 \
@@ -22,7 +26,7 @@ import requests
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
-TZ = os.environ.get("DST_SESSION_TZ", "UTC")
+TZ = os.environ.get("DST_SESSION_TZ", "+00:00")   # numeric offset; "UTC" needs MariaDB tz tables
 h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 
 
