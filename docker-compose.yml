@@ -237,9 +237,9 @@ services:
       SPEED_INTERVAL: ${SPEED_INTERVAL:-1}
       BRIDGE_ACCESS_TOKEN_FILE: /bridge-data/access_token
       ACCESS_TOKEN_REQUIRED: "1"
+    # override the tools image's `sleep infinity` entrypoint so the command runs as a shell
+    entrypoint: ["sh", "-c"]
     command:
-      - sh
-      - -c
       - 'i=0; until [ -s /bridge-data/access_token ]; do i=$((i+1)); [ "$i" -ge 60 ] && { echo "register: bridge token not ready after 120s, skipping"; exit 0; }; sleep 2; done; exec bash /app/scripts/register-telemetry.sh'
 
   # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
