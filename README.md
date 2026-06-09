@@ -133,17 +133,17 @@ teslalogger's MQTT to hand the entities over cleanly.
 
 Coverage includes trips (distance/duration/energy/consumption/max speed+power, derived by tlwriter
 from the drive session), active route (destination, ETA, traffic delay, energy at arrival), firmware
-version + update status, windows, heading, time-to-full-charge and fast-charger brand. Geofences
-(`Is Home`/`Work`/`Charger` and the Location name) are config-driven via `HA_HOME`/`HA_WORK`/`HA_CHARGER`
-since the stack has no geofence database. `country_code` has no telemetry source and isn't published.
+version + update status, windows, heading, time-to-full-charge and fast-charger brand. The
+`device_tracker` reports pure GPS, so geofencing is HA-native — define zones in HA (Settings → Areas &
+Zones) and they resolve from the coordinates; there are no stack-side geofence entities.
+`country_code` has no telemetry source and isn't published.
 
-Set the device identity and (optionally) home zone in `.env`:
+Set the device identity in `.env`:
 ```
 HA_DEVICE_NAME=Tesla
 HA_DEVICE_MODEL=Model 3
-HA_HOME_LAT=...
-HA_HOME_LON=...      # device_tracker reports home/not_home within HA_HOME_RADIUS_M (100 m)
 ```
+Geofencing is handled by HA's own zones (the `device_tracker` is pure GPS), so no home coords are needed here.
 
 ## Behind an existing reverse proxy / shared broker
 

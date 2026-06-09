@@ -15,7 +15,6 @@ Model (mirrors teslalogger):
     (EndChargingID, charge_energy_added = cumulative delta, max_charger_power, fast_charger_type).
 """
 import json
-import math
 import os
 import threading
 import time
@@ -54,16 +53,8 @@ REPLAY_GRACE = float(os.environ.get("REPLAY_GRACE", "10"))  # ignore retained re
 # it already holds the authoritative session state and the km-normalised values, so HA stays
 # consistent with Grafana. Off by default so the parallel validator is unaffected.
 HA_PUBLISH = os.environ.get("HA_PUBLISH", "0").lower() in ("1", "true", "yes")
-HA_HOME_LAT = os.environ.get("HA_HOME_LAT")
-HA_HOME_LON = os.environ.get("HA_HOME_LON")
-HA_HOME_RADIUS_M = float(os.environ.get("HA_HOME_RADIUS_M", "100"))
-# Optional extra geofences (the new stack has no geofence DB like teslalogger; define them here).
-# Each: "<lat>,<lon>[,<radius_m>]". Used for is_work / is_charger and the location name.
-HA_GEOFENCES = {
-    "home": (HA_HOME_LAT and HA_HOME_LON) and "%s,%s,%s" % (HA_HOME_LAT, HA_HOME_LON, HA_HOME_RADIUS_M) or os.environ.get("HA_HOME"),
-    "work": os.environ.get("HA_WORK"),
-    "charger": os.environ.get("HA_CHARGER"),
-}
+# Geofencing is left to Home Assistant: tlwriter publishes the car's GPS and HA's own zones
+# resolve home/work/etc. So there are no geofence coords here.
 
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
@@ -410,28 +401,6 @@ def on_message(client, userdata, msg):
             s["charger_type"] = "AC" if field == "ACChargingPower" else "DC"
 
 
-def _haversine_m(lat1, lon1, lat2, lon2):
-    r = 6371000.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
-
-
-def _in_geofence(spec, lat, lng):
-    # spec = "<lat>,<lon>[,<radius_m>]"; default radius 100 m. Returns True if (lat,lng) is inside.
-    if not spec:
-        return False
-    try:
-        parts = [float(x) for x in str(spec).split(",")]
-        glat, glon = parts[0], parts[1]
-        rad = parts[2] if len(parts) > 2 else 100.0
-    except (ValueError, IndexError):
-        return False
-    return _haversine_m(lat, lng, glat, glon) <= rad
-
-
 def ha_pub(name, value):
     # Publish a derived value to <BASE>/<VIN>/ha/<name>, retained, only when it changed.
     if value is None or mqtt_client is None:
@@ -498,17 +467,9 @@ def publish_ha(vin):
 
     lat, lng = lv(vin, "Latitude"), lv(vin, "Longitude")
     if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+        # GPS for the device_tracker; HA's own zones resolve home/work/etc. from these coords.
         ha_pub("gps", json.dumps({"latitude": lat, "longitude": lng,
                                   "gps_accuracy": 5, "source_type": "gps"}))
-        in_home = _in_geofence(HA_GEOFENCES.get("home"), lat, lng)
-        in_work = _in_geofence(HA_GEOFENCES.get("work"), lat, lng)
-        in_charger = _in_geofence(HA_GEOFENCES.get("charger"), lat, lng)
-        ha_pub("home", "home" if in_home else "not_home")   # device_tracker state
-        ha_pub("is_home", in_home)
-        ha_pub("is_work", in_work)
-        ha_pub("is_charger", in_charger)
-        ha_pub("location_name", "Home" if in_home else "Work" if in_work else
-                                "Charger" if in_charger else "")
 
     # windows: open count from the four window fields (enum string; anything but Closed = open)
     wins = [lv(vin, w) for w in ("FdWindow", "FpWindow", "RdWindow", "RpWindow")]

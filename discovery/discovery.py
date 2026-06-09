@@ -197,15 +197,8 @@ ENTITIES = [
     ("sensor", "trip_start", {"name": "Trip start", "state_topic": ha("trip_start"), "icon": "mdi:car-clock"}),
     ("sensor", "trip_start_dt", {"name": "Trip timestamp", "state_topic": ha("trip_start_dt"),
                                  "device_class": "timestamp", "icon": "mdi:car-clock"}),
-    # --- geofences (configure via tlwriter HA_HOME / HA_WORK / HA_CHARGER) --
-    ("sensor", "TLGeofence", {"name": "Location", "state_topic": ha("location_name")}),
-    ("binary_sensor", "TLGeofenceIsHome", {"name": "Is Home", "state_topic": ha("is_home"),
-                                           "payload_on": "true", "payload_off": "false", "icon": "mdi:home"}),
-    ("binary_sensor", "TLGeofenceIsWork", {"name": "Is Work", "state_topic": ha("is_work"),
-                                           "payload_on": "true", "payload_off": "false", "icon": "mdi:briefcase"}),
-    ("binary_sensor", "TLGeofenceIsCharger", {"name": "Is Charger", "state_topic": ha("is_charger"),
-                                              "payload_on": "true", "payload_off": "false",
-                                              "icon": "mdi:ev-station"}),
+    # Geofences (Is Home/Work/Charger, location name) are intentionally NOT published — define
+    # zones in Home Assistant and let HA resolve them from the device_tracker's GPS.
     # --- misc --------------------------------------------------------------
     ("sensor", "heading", {"name": "Heading", "state_topic": v("GpsHeading"), "unit_of_measurement": "°",
                            "icon": "mdi:compass", "value_template": "{{ value | float | round(0) }}"}),
@@ -234,11 +227,11 @@ def build_configs():
         c["device"] = DEVICE
         topic = "%s/%s/%s/%s/config" % (PREFIX, comp, VIN, obj)
         out.append((topic, c))
-    # device_tracker: GPS via json attributes, home/not_home from <BASE>/<VIN>/ha/home.
-    # No unique_id (matches teslalogger; keeps the same device_tracker.<name> entity).
+    # device_tracker: pure GPS via json attributes (latitude/longitude). No forced state — HA's
+    # zones resolve home/work/etc. from the coordinates. No unique_id (matches teslalogger; keeps
+    # the same device_tracker.<name> entity).
     out.append(("%s/device_tracker/%s/config" % (PREFIX, VIN), {
-        "name": DEV_NAME, "state_topic": ha("home"), "json_attributes_topic": ha("gps"),
-        "source_type": "gps", "payload_home": "home", "payload_not_home": "not_home",
+        "name": DEV_NAME, "json_attributes_topic": ha("gps"), "source_type": "gps",
         "device": DEVICE}))
     return out
 
