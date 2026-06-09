@@ -11,6 +11,10 @@ PROXY_CERT="$ROOT/proxy/tls-cert.pem"
 CA_CRT="$ROOT/certs/ca.crt"
 PROXY_URL="${PROXY_URL:-https://tesla-http-proxy:4443}"
 TELEMETRY_PORT="${TELEMETRY_PORT:-443}"
+# GPS / speed streaming cadence (seconds). 1 = densest tracks (GPS updates ~1/s on the car);
+# raise to 2-3 for teslalogger-parity with less write volume. Keep tlwriter POS_DRIVE_INTERVAL in sync.
+LOCATION_INTERVAL="${LOCATION_INTERVAL:-1}"
+SPEED_INTERVAL="${SPEED_INTERVAL:-1}"
 [ -r "$PROXY_CERT" ] || { echo "Missing $PROXY_CERT (run generate-keys.sh and start the proxy)"; exit 1; }
 [ -r "$CA_CRT" ]    || { echo "Missing $CA_CRT (run generate-keys.sh)"; exit 1; }
 
@@ -25,34 +29,35 @@ ACCESS=$(curl -s "$TESLA_AUTH_URL" \
 # Field list + intervals (seconds). Location needs the vehicle_location scope.
 # Full list of available fields: ../FIELDS.md
 jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
-  --arg host "$TELEMETRY_HOST" --argjson port "$TELEMETRY_PORT" '{
+  --arg host "$TELEMETRY_HOST" --argjson port "$TELEMETRY_PORT" \
+  --argjson loci "$LOCATION_INTERVAL" --argjson speedi "$SPEED_INTERVAL" '{
   vins: [$vin],
   config: {
     hostname: $host,
     port: $port,
     ca: $ca,
     fields: {
-      VehicleSpeed:    {interval_seconds: 10},
-      Soc:             {interval_seconds: 60},
-      BatteryLevel:    {interval_seconds: 60},
-      ChargeState:     {interval_seconds: 60},
-      ACChargingPower:    {interval_seconds: 30},
-      DCChargingPower:    {interval_seconds: 30},
-      ACChargingEnergyIn: {interval_seconds: 60},
-      DCChargingEnergyIn: {interval_seconds: 60},
+      VehicleSpeed:    {interval_seconds: $speedi},
+      Soc:             {interval_seconds: 10},
+      BatteryLevel:    {interval_seconds: 10},
+      ChargeState:     {interval_seconds: 30},
+      ACChargingPower:    {interval_seconds: 5},
+      DCChargingPower:    {interval_seconds: 5},
+      ACChargingEnergyIn: {interval_seconds: 10},
+      DCChargingEnergyIn: {interval_seconds: 10},
       RatedRange:         {interval_seconds: 120},
       IdealBatteryRange:  {interval_seconds: 60},
       EstBatteryRange:    {interval_seconds: 60},
-      EnergyRemaining:    {interval_seconds: 60},
-      PackVoltage:        {interval_seconds: 10},
-      PackCurrent:        {interval_seconds: 10},
-      ChargerVoltage:     {interval_seconds: 30},
-      Location:        {interval_seconds: 10},
-      Gear:            {interval_seconds: 5},
-      Odometer:        {interval_seconds: 30},
+      EnergyRemaining:    {interval_seconds: 30},
+      PackVoltage:        {interval_seconds: 1},
+      PackCurrent:        {interval_seconds: 1},
+      ChargerVoltage:     {interval_seconds: 5},
+      Location:        {interval_seconds: $loci},
+      Gear:            {interval_seconds: 1},
+      Odometer:        {interval_seconds: 1},
       InsideTemp:      {interval_seconds: 60},
       OutsideTemp:     {interval_seconds: 60},
-      HvacPower:       {interval_seconds: 30},
+      HvacPower:       {interval_seconds: 10},
       SentryMode:      {interval_seconds: 30},
       DoorState:       {interval_seconds: 5},
       Locked:          {interval_seconds: 10},

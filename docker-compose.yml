@@ -175,6 +175,10 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       TLW_DB_NAME: ${TLW_DB_NAME:-teslalogger}
       TESLA_VIN: ${TESLA_VIN}
+      # pos row cadence while driving (s); keep in sync with register-telemetry Location interval
+      POS_DRIVE_INTERVAL: ${POS_DRIVE_INTERVAL:-1}
+      # charging-row cadence (s) -> resolution of the charge curves
+      CHARGE_ROW_INTERVAL: ${CHARGE_ROW_INTERVAL:-10}
 
   # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
   # secrets stay in the container env (no secret file, no docker inspect). Profile "tools".
