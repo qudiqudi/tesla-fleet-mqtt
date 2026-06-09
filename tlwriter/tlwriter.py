@@ -49,13 +49,17 @@ CHARGE_ROW_INTERVAL = float(os.environ.get("CHARGE_ROW_INTERVAL", "60"))
 
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
-# km / km-h, so convert when the car reports miles. TLW_DISTANCE_UNIT:
-#   auto (default) -> follow the car's SettingDistanceUnit field
-#   metric|imperial -> force it, overriding SettingDistanceUnit. Use "imperial" when a
-#   firmware bug streams miles while the car is set to km (Tesla regression seen 2026-06);
-#   set back to auto once the firmware is fixed.
+# km / km-h, so convert when the car reports miles. Tesla doesn't document the unit and a
+# firmware update can flip it (regression seen 2026-06: Odometer streamed in miles while the
+# car was set to km), so "auto" doesn't trust SettingDistanceUnit — it detects from the
+# odometer itself: that's monotonic, and we know the true km from history, so a reading well
+# below the known km figure is miles (~0.62x). Self-corrects both ways, no manual toggle.
+# TLW_DISTANCE_UNIT: auto (detect, default) | metric | imperial (force, escape hatch).
 DIST_FIELDS = {"VehicleSpeed", "Odometer", "RatedRange", "IdealBatteryRange", "EstBatteryRange"}
 DISTANCE_UNIT = os.environ.get("TLW_DISTANCE_UNIT", "auto").lower()
+IMP_CUTOFF = float(os.environ.get("TLW_IMPERIAL_CUTOFF", "0.75"))  # odo < cutoff*known_km -> miles
+unit_ref = {}   # vin -> highest odometer seen, in km (detection reference, seeded from DB)
+unit_imp = {}   # vin -> True if telemetry currently looks imperial
 
 lock = threading.Lock()
 latest = {}   # vin -> {field: value, "_ts": ts}
@@ -112,13 +116,31 @@ def lv(vin, f):
     return latest.get(vin, {}).get(f)
 
 
-def is_imperial(L):
+def is_imperial(vin, L):
     if DISTANCE_UNIT.startswith(("imp", "mi")):
         return True
     if DISTANCE_UNIT.startswith(("met", "km")):
         return False
-    u = L.get("SettingDistanceUnit")   # auto: trust the car's reported unit
+    if vin in unit_imp:                # auto: odometer-continuity detection (authoritative)
+        return unit_imp[vin]
+    u = L.get("SettingDistanceUnit")   # bootstrap only, before the first odometer reading
     return "mi" in str(u).lower() if u is not None else False
+
+
+def detect_unit(vin, raw_odo):
+    # Odometer only ever increases by a little between readings; a value well below the known
+    # km figure (miles is ~0.62x) means the stream went imperial. Self-corrects when it returns.
+    ref = unit_ref.get(vin, 0.0)
+    if ref > 0 and raw_odo > 0:
+        if raw_odo < IMP_CUTOFF * ref and not unit_imp.get(vin):
+            unit_imp[vin] = True
+            log("%s telemetry imperial (odo %.0f vs %.0f km) -> converting" % (vin, raw_odo, ref))
+        elif raw_odo >= 0.9 * ref and unit_imp.get(vin):
+            unit_imp[vin] = False
+            log("%s telemetry metric again (odo %.0f) -> conversion off" % (vin, raw_odo))
+    km = raw_odo * MI_TO_KM if unit_imp.get(vin) else raw_odo
+    if km > ref:
+        unit_ref[vin] = km
 
 
 def power_kw(vin):
@@ -329,8 +351,10 @@ def on_message(client, userdata, msg):
         active.setdefault(vin, {})
         s = st(vin)
         if field == "SettingDistanceUnit" and L.get("SettingDistanceUnit") != val:
-            log("%s distance unit -> %s" % (vin, val))
-        if field in DIST_FIELDS and isinstance(val, (int, float)) and is_imperial(L):
+            log("%s SettingDistanceUnit -> %s" % (vin, val))
+        if field == "Odometer" and isinstance(val, (int, float)):
+            detect_unit(vin, val)   # decide miles vs km from the odometer itself
+        if field in DIST_FIELDS and isinstance(val, (int, float)) and is_imperial(vin, L):
             val = val * MI_TO_KM   # normalise miles/(mph) to km/(km-h) for the teslalogger schema
         if field == "Location" and isinstance(val, dict):
             L["Latitude"] = val.get("latitude"); L["Longitude"] = val.get("longitude")
@@ -396,6 +420,11 @@ def main():
         c.execute("SELECT id FROM cars WHERE vin=%s", (VIN,))
         row = c.fetchone()
         car_id = row[0] if row else 1
+        # seed the unit-detection reference with the last known (km) odometer
+        c.execute("SELECT MAX(odometer) FROM pos WHERE CarID=%s AND odometer>0", (car_id,))
+        r2 = c.fetchone()
+        if r2 and r2[0]:
+            unit_ref[VIN] = float(r2[0]); log("odometer reference: %.0f km" % unit_ref[VIN])
     threading.Thread(target=ticker, daemon=True).start()
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tesla-tlwriter")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
