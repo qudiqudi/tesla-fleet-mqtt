@@ -166,6 +166,7 @@ def geocode_address(lat, lng):
 
 def geocode_worker():
     global _geo_db, _geo_last
+    backfill_geocode()   # one-shot at startup, in this thread (only thread touching the geo conn)
     while True:
         pos_id, lat, lng = geocode_q.get()
         try:
@@ -195,16 +196,23 @@ def queue_geocode(vin, pos_id):
 
 
 def backfill_geocode():
-    # Geocode existing drive start/end positions that have no address yet (e.g. this writer's own
-    # drives, which teslalogger never geocoded). One-shot at startup, capped, drained slowly.
+    # Geocode existing drive start/end positions that have no address yet (this writer's own
+    # drives, which teslalogger never geocoded). Runs in the worker thread so it can't block
+    # startup. Two cheap PK-indexed steps — NOT a `pos JOIN drivestate ON p.id IN (...)`, which
+    # is a non-indexed cross scan that pegs the DB on a large pos table.
     if not GEOCODE:
         return
     try:
         with _geo_conn().cursor() as cur:
-            cur.execute(
-                "SELECT p.id, p.lat, p.lng FROM pos p JOIN drivestate d ON p.id IN (d.StartPos, d.EndPos) "
-                "WHERE d.CarID=%s AND p.lat IS NOT NULL AND (p.address IS NULL OR p.address='') "
-                "GROUP BY p.id ORDER BY p.id DESC LIMIT %s", (car_id, GEOCODE_BACKFILL_LIMIT))
+            cur.execute("SELECT StartPos, EndPos FROM drivestate WHERE CarID=%s ORDER BY id DESC LIMIT 1000",
+                        (car_id,))
+            ids = {p for row in cur.fetchall() for p in row if p}
+            if not ids:
+                return
+            placeholders = ",".join(["%s"] * len(ids))
+            cur.execute("SELECT id, lat, lng FROM pos WHERE id IN (%s) AND lat IS NOT NULL "
+                        "AND (address IS NULL OR address='') ORDER BY id DESC LIMIT %s" % placeholders,
+                        tuple(ids) + (GEOCODE_BACKFILL_LIMIT,))
             rows = cur.fetchall()
         for pid, lat, lng in rows:
             geocode_q.put((pid, float(lat), float(lng)))
@@ -703,7 +711,8 @@ def main():
     resume_sessions()   # continue open sessions across the restart instead of orphaning them
     threading.Thread(target=ticker, daemon=True).start()
     if GEOCODE:
-        backfill_geocode()   # enqueue existing un-addressed drives (uses the geo conn before the worker)
+        # worker does its own startup backfill; never run it on the main thread (it must reach
+        # client.connect() so the car keeps being logged).
         threading.Thread(target=geocode_worker, daemon=True).start()
     if st(VIN)["vstate"] is None:   # nothing open to resume -> seed asleep so there's one state row
         with lock:
