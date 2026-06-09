@@ -9,6 +9,11 @@ Payload: JSON body for the command, or empty for none.
          {}                        -> tesla/cmd/auto_conditioning_start
 Result:  published to <base>/cmd_result/<command> as {"status": <int>, "resp": <str>}
 
+Some controls are naturally on/off in Home Assistant but Fleet exposes them as paired
+start/stop endpoints. TOGGLE_ALIASES maps a single "<alias>" command carrying {"on": bool}
+to the right endpoint, so a plain HA switch (one command_topic, payload_on/off) works:
+         {"on": true}  -> tesla/cmd/charge -> charge_start ; {"on": false} -> charge_stop
+
 The refresh token is seeded from the environment; Tesla rotates it on every refresh,
 so the bridge captures the new refresh token from each response and persists it to
 REFRESH_TOKEN_FILE (a private volume), loading that on startup in preference to the env
@@ -44,6 +49,32 @@ TOKEN_FILE = os.environ.get("REFRESH_TOKEN_FILE", "/data/refresh_token")
 _token_lock = threading.Lock()
 _access_token = None
 _token_expiry = 0.0
+
+# on/off HA controls -> Fleet's paired start/stop endpoints. {"on": bool} selects which.
+# The "off" endpoint may be None (e.g. there is no "sleep" to pair with wake).
+TOGGLE_ALIASES = {
+    "charge": ("charge_start", "charge_stop"),
+    "auto_conditioning": ("auto_conditioning_start", "auto_conditioning_stop"),
+    "wake": ("wake_up", None),
+}
+
+
+def resolve_command(command, body):
+    """Map a toggle alias + {"on": bool} to a concrete endpoint; returns (endpoint, body).
+    endpoint is None when the requested direction has no command (e.g. turning the wake
+    switch off)."""
+    pair = TOGGLE_ALIASES.get(command)
+    if not pair:
+        return command, body
+    on = bool(body.get("on", True)) if isinstance(body, dict) else True
+    return (pair[0] if on else pair[1]), {}
+
+
+def command_url(command):
+    # wake_up is a vehicle endpoint, not a /command/ action.
+    if command == "wake_up":
+        return "%s/api/1/vehicles/%s/wake_up" % (PROXY_URL, VIN)
+    return "%s/api/1/vehicles/%s/command/%s" % (PROXY_URL, VIN, command)
 
 
 def log(*a):
@@ -109,7 +140,7 @@ def get_token(force=False):
 
 
 def send_command(command, body):
-    url = "%s/api/1/vehicles/%s/command/%s" % (PROXY_URL, VIN, command)
+    url = command_url(command)
     r = None
     for attempt in (1, 2):
         token = get_token(force=(attempt == 2))
@@ -146,8 +177,12 @@ def on_message(client, userdata, msg):
     except json.JSONDecodeError:
         log("cmd %s: bad JSON payload %r, ignoring" % (command, raw))
         return
-    status, text = send_command(command, body)
-    log("cmd %s -> %s %s" % (command, status, text[:200]))
+    endpoint, body = resolve_command(command, body)
+    if endpoint is None:
+        log("cmd %s: no endpoint for this direction, ignoring" % command)
+        return
+    status, text = send_command(endpoint, body)
+    log("cmd %s -> %s -> %s %s" % (command, endpoint, status, text[:200]))
     client.publish(
         "%s/cmd_result/%s" % (BASE, command),
         json.dumps({"status": status, "resp": text}),

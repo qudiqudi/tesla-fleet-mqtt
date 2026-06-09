@@ -181,6 +181,37 @@ services:
       CHARGE_ROW_INTERVAL: ${CHARGE_ROW_INTERVAL:-10}
       # distance unit: auto (follow car) | metric | imperial (force; use if firmware misreports)
       TLW_DISTANCE_UNIT: ${TLW_DISTANCE_UNIT:-auto}
+      # publish derived/normalised live state to <base>/<vin>/ha/* for Home Assistant
+      # (the tesla-ha-discovery service points HA entities at these). 1=on, 0=off.
+      HA_PUBLISH: ${HA_PUBLISH:-1}
+      # optional: home coordinates so the device_tracker reports home/not_home
+      HA_HOME_LAT: ${HA_HOME_LAT:-}
+      HA_HOME_LON: ${HA_HOME_LON:-}
+      HA_HOME_RADIUS_M: ${HA_HOME_RADIUS_M:-100}
+
+  # Home Assistant MQTT discovery: makes the car appear in HA as a device with sensors,
+  # switches, numbers and a device tracker, fed by the telemetry stream + tlwriter's ha/*
+  # topics + the command bridge. Stateless; republishes periodically. Profile "ha" (also
+  # enable "history" so tlwriter publishes the derived ha/* topics these entities read).
+  tesla-ha-discovery:
+    <<: *common
+    build: ${STACK_DIR:-.}/discovery
+    container_name: tesla-ha-discovery
+    profiles: ["ha"]
+    depends_on:
+      - tesla-fleet-telemetry
+    environment:
+      MQTT_HOST: ${MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT}
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      TESLA_VIN: ${TESLA_VIN}
+      HA_DISCOVERY_PREFIX: ${HA_DISCOVERY_PREFIX:-homeassistant}
+      HA_DEVICE_NAME: ${HA_DEVICE_NAME:-Tesla}
+      HA_DEVICE_MODEL: ${HA_DEVICE_MODEL:-Tesla}
+      HA_DEVICE_MANUFACTURER: ${HA_DEVICE_MANUFACTURER:-Tesla}
+      HA_DISCOVERY_INTERVAL: ${HA_DISCOVERY_INTERVAL:-300}
 
   # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
   # secrets stay in the container env (no secret file, no docker inspect). Profile "tools".
