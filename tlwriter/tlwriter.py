@@ -427,6 +427,37 @@ def ticker():
                 set_shift(vin, lv(vin, "Gear"), t)
 
 
+def resume_sessions():
+    # On restart, CONTINUE the open sessions a previous run left, instead of closing them and
+    # opening new ones. A CI/CD redeploy recreates the container; orphaning+reseeding on every
+    # recreate piled up overlapping rows and dirtied the data. Here we adopt the latest open row
+    # per table into memory and close only extra/older opens; inverted rows fixed defensively.
+    s = st(VIN)
+    with db().cursor() as c:
+        def adopt(tbl, col, id_key, val_key):
+            c.execute("SELECT id, %s FROM %s WHERE CarID=%%s AND EndDate IS NULL ORDER BY StartDate DESC"
+                      % (col, tbl), (car_id,))
+            rows = c.fetchall()
+            if rows:
+                s[id_key] = rows[0][0]
+                if val_key:
+                    s[val_key] = rows[0][1]
+                for r in rows[1:]:   # close stray older open rows from past bugs
+                    c.execute("UPDATE %s SET EndDate=StartDate WHERE id=%%s" % tbl, (r[0],))
+            return bool(rows)
+        adopt("state", "state", "state_id", "vstate")
+        adopt("shiftstate", "state", "shift_id", "shift")
+        if adopt("drivestate", "StartPos", "drivestate_id", None):
+            s["mode"] = "drive"
+        if adopt("chargingstate", "StartChargingID", "chargingstate_id", "start_charging_id") and s["mode"] is None:
+            s["mode"] = "charge"
+        for tbl in ("state", "shiftstate", "drivestate", "chargingstate"):
+            c.execute("UPDATE %s SET EndDate=StartDate WHERE CarID=%%s AND EndDate IS NOT NULL "
+                      "AND EndDate<StartDate" % tbl, (car_id,))
+    if s["vstate"]:
+        log("resumed: state=%s mode=%s" % (s["vstate"], s["mode"]))
+
+
 def main():
     global car_id
     with db().cursor() as c:
@@ -438,17 +469,11 @@ def main():
         r2 = c.fetchone()
         if r2 and r2[0]:
             unit_ref[VIN] = float(r2[0]); log("odometer reference: %.0f km" % unit_ref[VIN])
-        # Close session rows a previous run left open. Without this, every restart opens a
-        # new row without closing the old one -> overlapping OPEN rows and a stale "online"
-        # in the Status panel even when the car is asleep. Zero-length closes the orphans.
-        for tbl in ("state", "shiftstate", "drivestate", "chargingstate"):
-            c.execute("UPDATE %s SET EndDate=StartDate WHERE CarID=%%s AND "
-                      "(EndDate IS NULL OR EndDate < StartDate)" % tbl, (car_id,))
+    resume_sessions()   # continue open sessions across the restart instead of orphaning them
     threading.Thread(target=ticker, daemon=True).start()
-    # Seed an 'asleep' state (assume asleep until telemetry proves otherwise); the first
-    # message flips it to online/driving/charging, and the ticker returns it to asleep on idle.
-    with lock:
-        set_vstate(VIN, "asleep", now())
+    if st(VIN)["vstate"] is None:   # nothing open to resume -> seed asleep so there's one state row
+        with lock:
+            set_vstate(VIN, "asleep", now())
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tesla-tlwriter")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     client.on_connect = on_connect
