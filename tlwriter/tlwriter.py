@@ -439,22 +439,26 @@ def publish_ha(vin):
     ha_pub("driving", mode == "drive")
     ha_pub("charging", mode == "charge")
 
-    cs = lv(vin, "ChargeState")
-    plugged = mode == "charge" or (cs is not None and "Disconnect" not in str(cs) and str(cs) != "")
-    ha_pub("plugged_in", bool(plugged))
-    ha_pub("fast_charger", (lv(vin, "DCChargingPower") or 0) > CHARGE_POWER_MIN)
+    # Several fields stream null when inactive (VehicleSpeed/charge power parked, Gear, ...) and
+    # on_message keeps the last non-null value to protect the DB writer. For the live HA view that
+    # would show stale speed/power on a parked car, so gate the transient ones on the session mode.
+    charging = mode == "charge"
+    driving = mode == "drive"
+    plugged = charging or bool(lv(vin, "ChargePortDoorOpen"))
+    ha_pub("plugged_in", plugged)
+    ha_pub("fast_charger", charging and (lv(vin, "DCChargingPower") or 0) > CHARGE_POWER_MIN)
 
     # distance/speed/range are already km-normalised in latest[] (see on_message)
     ha_pub("odometer_km", round(lv(vin, "Odometer"), 1) if lv(vin, "Odometer") is not None else None)
     spd = lv(vin, "VehicleSpeed")
-    ha_pub("speed_kmh", round(spd) if isinstance(spd, (int, float)) else 0)
+    ha_pub("speed_kmh", round(spd) if (driving and isinstance(spd, (int, float))) else 0)
     ha_pub("battery_range_km", round(lv(vin, "RatedRange"), 1) if lv(vin, "RatedRange") is not None else None)
     ir = ideal_range(vin)
     ha_pub("ideal_range_km", round(ir, 1) if isinstance(ir, (int, float)) else None)
-    crm = lv(vin, "ChargeRateMilePerHour")   # field name is always miles/h
-    ha_pub("charge_rate_km", round(crm * MI_TO_KM, 1) if isinstance(crm, (int, float)) else None)
+    crm = lv(vin, "ChargeRateMilePerHour") if charging else 0   # field name is always miles/h
+    ha_pub("charge_rate_km", round(crm * MI_TO_KM, 1) if isinstance(crm, (int, float)) else 0)
 
-    power = (lv(vin, "ACChargingPower") or 0) + (lv(vin, "DCChargingPower") or 0)
+    power = ((lv(vin, "ACChargingPower") or 0) + (lv(vin, "DCChargingPower") or 0)) if charging else 0
     ha_pub("charger_power_kw", round(power, 1))
     total_e = (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0)
     if mode == "charge":
