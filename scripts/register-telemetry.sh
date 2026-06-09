@@ -84,7 +84,9 @@ jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
       FdWindow:            {interval_seconds: 30},
       FpWindow:            {interval_seconds: 30},
       RdWindow:            {interval_seconds: 30},
-      RpWindow:            {interval_seconds: 30}
+      RpWindow:            {interval_seconds: 30},
+      ModuleTempMin:       {interval_seconds: 60},
+      ModuleTempMax:       {interval_seconds: 60}
     }
   }
 }' > /tmp/tesla-tcfg.json
