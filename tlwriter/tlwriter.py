@@ -15,6 +15,7 @@ Model (mirrors teslalogger):
     (EndChargingID, charge_energy_added = cumulative delta, max_charger_power, fast_charger_type).
 """
 import json
+import math
 import os
 import threading
 import time
@@ -48,6 +49,15 @@ POS_IDLE_INTERVAL = float(os.environ.get("POS_IDLE_INTERVAL", "600"))
 CHARGE_ROW_INTERVAL = float(os.environ.get("CHARGE_ROW_INTERVAL", "60"))
 REPLAY_GRACE = float(os.environ.get("REPLAY_GRACE", "10"))  # ignore retained replay for Ns after connect
 
+# Home Assistant: optionally publish derived/normalised state to <BASE>/<VIN>/ha/<name>
+# (retained) for the HA discovery service to point entities at. tlwriter is the right place:
+# it already holds the authoritative session state and the km-normalised values, so HA stays
+# consistent with Grafana. Off by default so the parallel validator is unaffected.
+HA_PUBLISH = os.environ.get("HA_PUBLISH", "0").lower() in ("1", "true", "yes")
+HA_HOME_LAT = os.environ.get("HA_HOME_LAT")
+HA_HOME_LON = os.environ.get("HA_HOME_LON")
+HA_HOME_RADIUS_M = float(os.environ.get("HA_HOME_RADIUS_M", "100"))
+
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
 # km / km-h, so convert when the car reports miles. Tesla doesn't document the unit and a
@@ -67,6 +77,8 @@ latest = {}   # vin -> {field: value, "_ts": ts}
 active = {}   # vin -> {"drive": ts, "charge": ts}
 state = {}    # vin -> session dict
 car_id = None
+mqtt_client = None    # set in main(); used to publish HA topics
+_ha_last = {}         # name -> last published payload (publish only on change)
 
 
 def log(*a):
@@ -387,6 +399,84 @@ def on_message(client, userdata, msg):
             s["charger_type"] = "AC" if field == "ACChargingPower" else "DC"
 
 
+def _haversine_m(lat1, lon1, lat2, lon2):
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def ha_pub(name, value):
+    # Publish a derived value to <BASE>/<VIN>/ha/<name>, retained, only when it changed.
+    if value is None or mqtt_client is None:
+        return
+    if isinstance(value, bool):
+        payload = "true" if value else "false"
+    elif isinstance(value, float):
+        payload = ("%.3f" % value).rstrip("0").rstrip(".")
+    else:
+        payload = str(value)
+    if _ha_last.get(name) == payload:
+        return
+    _ha_last[name] = payload
+    mqtt_client.publish("%s/%s/ha/%s" % (BASE, VIN, name), payload, qos=1, retain=True)
+
+
+def publish_ha(vin):
+    # Derived/normalised live state for Home Assistant. Mirrors the authoritative session
+    # state (set_vstate/set_mode) and the km-normalised latest values, so the HA dashboard
+    # agrees with Grafana. Called each tick; ha_pub() suppresses unchanged values.
+    if not HA_PUBLISH:
+        return
+    s = st(vin)
+    vstate = s["vstate"]
+    mode = s["mode"]
+    ha_pub("state", vstate)
+    ha_pub("sleeping", vstate == "asleep")
+    ha_pub("online", vstate in ("online", "driving", "charging"))
+    ha_pub("driving", mode == "drive")
+    ha_pub("charging", mode == "charge")
+
+    cs = lv(vin, "ChargeState")
+    plugged = mode == "charge" or (cs is not None and "Disconnect" not in str(cs) and str(cs) != "")
+    ha_pub("plugged_in", bool(plugged))
+    ha_pub("fast_charger", (lv(vin, "DCChargingPower") or 0) > CHARGE_POWER_MIN)
+
+    # distance/speed/range are already km-normalised in latest[] (see on_message)
+    ha_pub("odometer_km", round(lv(vin, "Odometer"), 1) if lv(vin, "Odometer") is not None else None)
+    spd = lv(vin, "VehicleSpeed")
+    ha_pub("speed_kmh", round(spd) if isinstance(spd, (int, float)) else 0)
+    ha_pub("battery_range_km", round(lv(vin, "RatedRange"), 1) if lv(vin, "RatedRange") is not None else None)
+    ir = ideal_range(vin)
+    ha_pub("ideal_range_km", round(ir, 1) if isinstance(ir, (int, float)) else None)
+    crm = lv(vin, "ChargeRateMilePerHour")   # field name is always miles/h
+    ha_pub("charge_rate_km", round(crm * MI_TO_KM, 1) if isinstance(crm, (int, float)) else None)
+
+    power = (lv(vin, "ACChargingPower") or 0) + (lv(vin, "DCChargingPower") or 0)
+    ha_pub("charger_power_kw", round(power, 1))
+    total_e = (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0)
+    if mode == "charge":
+        s["ha_energy_added"] = max(0.0, total_e - s.get("start_energy", 0.0))
+    ha_pub("energy_added_kwh", round(s.get("ha_energy_added", 0.0), 2))
+
+    doors = lv(vin, "DoorState")
+    if isinstance(doors, dict):
+        ha_pub("open_doors", sum(1 for k in ("DriverFront", "DriverRear", "PassengerFront", "PassengerRear")
+                                 if doors.get(k)))
+        ha_pub("frunk", bool(doors.get("TrunkFront")))
+        ha_pub("trunk", bool(doors.get("TrunkRear")))
+
+    lat, lng = lv(vin, "Latitude"), lv(vin, "Longitude")
+    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+        ha_pub("gps", json.dumps({"latitude": lat, "longitude": lng,
+                                  "gps_accuracy": 5, "source_type": "gps"}))
+        if HA_HOME_LAT and HA_HOME_LON:
+            home = _haversine_m(lat, lng, float(HA_HOME_LAT), float(HA_HOME_LON)) <= HA_HOME_RADIUS_M
+            ha_pub("home", "home" if home else "not_home")
+
+
 def ticker():
     while True:
         time.sleep(TICK_S)
@@ -401,6 +491,7 @@ def ticker():
                         set_mode(vin, None, ots)
                     set_vstate(vin, "asleep", ots)
                     set_shift(vin, None, ots)
+                    publish_ha(vin)
                     continue
                 a = active.get(vin, {})
                 charging = (t - a.get("charge", 0)) < CHARGE_END_TIMEOUT
@@ -425,6 +516,7 @@ def ticker():
                 set_vstate(vin, "driving" if s["mode"] == "drive" else
                                 "charging" if s["mode"] == "charge" else "online", t)
                 set_shift(vin, lv(vin, "Gear"), t)
+                publish_ha(vin)
 
 
 def resume_sessions():
@@ -474,7 +566,9 @@ def main():
     if st(VIN)["vstate"] is None:   # nothing open to resume -> seed asleep so there's one state row
         with lock:
             set_vstate(VIN, "asleep", now())
+    global mqtt_client
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tesla-tlwriter")
+    mqtt_client = client   # publish_ha() uses this to push derived HA topics
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     client.on_connect = on_connect
     client.on_message = on_message

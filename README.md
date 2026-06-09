@@ -106,6 +106,37 @@ bash scripts/send-cmd.sh auto_conditioning_start
 bash scripts/send-cmd.sh charge_start
 ```
 
+## Home Assistant
+
+The `tesla-ha-discovery` service (profile `history`) publishes Home Assistant MQTT discovery
+configs, so the car shows up as a device with sensors, binary sensors, switches, numbers and a
+device tracker — no YAML in HA. It needs HA pointed at the same broker (MQTT integration).
+
+Two pieces feed the entities:
+- `tesla-tlwriter` with `HA_PUBLISH=1` (default) publishes derived/normalised live state to
+  `tesla/<VIN>/ha/*` — session state (online/asleep/driving/charging), km-normalised
+  odometer/speed/range (so the entities are correct even while the firmware unit bug streams
+  miles), summed charge power/energy, doors, and GPS. This keeps HA consistent with the
+  teslalogger-schema dashboards.
+- raw fields go straight from `tesla/<VIN>/v/*` (temperatures, TPMS, lock, charge limit, ...).
+
+Controls publish to `tesla/cmd/*` (handled by the bridge): charge start/stop, charge limit and
+amps, preconditioning, sentry, lock, wake, frunk/trunk, etc. The on/off switches use the bridge's
+toggle aliases (`charge`, `auto_conditioning`, `wake`).
+
+Discovery topics and `unique_id`s follow the teslalogger MQTT layout
+(`homeassistant/<comp>/<VIN>/<object_id>/config`, `unique_id <VIN>_<object_id>`), so if you are
+migrating off a teslalogger MQTT setup the existing entities and dashboard keep working — turn off
+teslalogger's MQTT to hand the entities over cleanly.
+
+Set the device identity and (optionally) home zone in `.env`:
+```
+HA_DEVICE_NAME=Tesla
+HA_DEVICE_MODEL=Model 3
+HA_HOME_LAT=...
+HA_HOME_LON=...      # device_tracker reports home/not_home within HA_HOME_RADIUS_M (100 m)
+```
+
 ## Behind an existing reverse proxy / shared broker
 
 If you already run a reverse proxy on 443 and/or a broker, use the override in `examples/existing-stack/docker-compose.override.yml`:
