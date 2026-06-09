@@ -131,6 +131,12 @@ Discovery topics and `unique_id`s follow the teslalogger MQTT layout
 migrating off a teslalogger MQTT setup the existing entities and dashboard keep working — turn off
 teslalogger's MQTT to hand the entities over cleanly.
 
+Coverage includes trips (distance/duration/energy/consumption/max speed+power, derived by tlwriter
+from the drive session), active route (destination, ETA, traffic delay, energy at arrival), firmware
+version + update status, windows, heading, time-to-full-charge and fast-charger brand. Geofences
+(`Is Home`/`Work`/`Charger` and the Location name) are config-driven via `HA_HOME`/`HA_WORK`/`HA_CHARGER`
+since the stack has no geofence database. `country_code` has no telemetry source and isn't published.
+
 Set the device identity and (optionally) home zone in `.env`:
 ```
 HA_DEVICE_NAME=Tesla

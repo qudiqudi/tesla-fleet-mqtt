@@ -57,6 +57,13 @@ HA_PUBLISH = os.environ.get("HA_PUBLISH", "0").lower() in ("1", "true", "yes")
 HA_HOME_LAT = os.environ.get("HA_HOME_LAT")
 HA_HOME_LON = os.environ.get("HA_HOME_LON")
 HA_HOME_RADIUS_M = float(os.environ.get("HA_HOME_RADIUS_M", "100"))
+# Optional extra geofences (the new stack has no geofence DB like teslalogger; define them here).
+# Each: "<lat>,<lon>[,<radius_m>]". Used for is_work / is_charger and the location name.
+HA_GEOFENCES = {
+    "home": (HA_HOME_LAT and HA_HOME_LON) and "%s,%s,%s" % (HA_HOME_LAT, HA_HOME_LON, HA_HOME_RADIUS_M) or os.environ.get("HA_HOME"),
+    "work": os.environ.get("HA_WORK"),
+    "charger": os.environ.get("HA_CHARGER"),
+}
 
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
@@ -269,6 +276,10 @@ def open_drive(vin, ts):
         return
     s["max_speed"] = 0
     s["pmax"] = s["pmin"] = s["psum"] = s["pcount"] = 0
+    # trip baseline for the HA trip_* entities (distance/energy deltas since the drive started)
+    s["trip_start_ts"] = ts
+    s["trip_start_odo"] = lv(vin, "Odometer")
+    s["trip_start_er"] = lv(vin, "EnergyRemaining")
     s["drivestate_id"] = execute(
         "INSERT INTO drivestate (StartDate,StartPos,CarID) VALUES (%s,%s,%s)",
         (dts(ts), s["last_pos_id"], car_id))
@@ -408,6 +419,19 @@ def _haversine_m(lat1, lon1, lat2, lon2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def _in_geofence(spec, lat, lng):
+    # spec = "<lat>,<lon>[,<radius_m>]"; default radius 100 m. Returns True if (lat,lng) is inside.
+    if not spec:
+        return False
+    try:
+        parts = [float(x) for x in str(spec).split(",")]
+        glat, glon = parts[0], parts[1]
+        rad = parts[2] if len(parts) > 2 else 100.0
+    except (ValueError, IndexError):
+        return False
+    return _haversine_m(lat, lng, glat, glon) <= rad
+
+
 def ha_pub(name, value):
     # Publish a derived value to <BASE>/<VIN>/ha/<name>, retained, only when it changed.
     if value is None or mqtt_client is None:
@@ -476,9 +500,55 @@ def publish_ha(vin):
     if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
         ha_pub("gps", json.dumps({"latitude": lat, "longitude": lng,
                                   "gps_accuracy": 5, "source_type": "gps"}))
-        if HA_HOME_LAT and HA_HOME_LON:
-            home = _haversine_m(lat, lng, float(HA_HOME_LAT), float(HA_HOME_LON)) <= HA_HOME_RADIUS_M
-            ha_pub("home", "home" if home else "not_home")
+        in_home = _in_geofence(HA_GEOFENCES.get("home"), lat, lng)
+        in_work = _in_geofence(HA_GEOFENCES.get("work"), lat, lng)
+        in_charger = _in_geofence(HA_GEOFENCES.get("charger"), lat, lng)
+        ha_pub("home", "home" if in_home else "not_home")   # device_tracker state
+        ha_pub("is_home", in_home)
+        ha_pub("is_work", in_work)
+        ha_pub("is_charger", in_charger)
+        ha_pub("location_name", "Home" if in_home else "Work" if in_work else
+                                "Charger" if in_charger else "")
+
+    # windows: open count from the four window fields (enum string; anything but Closed = open)
+    wins = [lv(vin, w) for w in ("FdWindow", "FpWindow", "RdWindow", "RpWindow")]
+    if any(w is not None for w in wins):
+        ha_pub("open_windows", sum(1 for w in wins if w is not None and "Closed" not in str(w)))
+
+    # firmware update status, derived from the update progress fields
+    dl = lv(vin, "SoftwareUpdateDownloadPercentComplete")
+    inst = lv(vin, "SoftwareUpdateInstallationPercentComplete")
+    upd_ver = lv(vin, "SoftwareUpdateVersion")
+    if isinstance(inst, (int, float)) and inst > 0:
+        ha_pub("software_update_status", "installing")
+    elif isinstance(dl, (int, float)) and dl > 0:
+        ha_pub("software_update_status", "downloading")
+    elif upd_ver not in (None, ""):
+        ha_pub("software_update_status", "available")
+    else:
+        ha_pub("software_update_status", "")
+
+    # trip_* metrics: only recompute while driving; when the drive ends the last values persist
+    if mode == "drive":
+        ha_pub("trip_max_speed", round(s["max_speed"]) if s.get("max_speed") else 0)
+        ha_pub("trip_max_power", round(s["pmax"], 1) if s.get("pmax") is not None else 0)
+        start_ts = s.get("trip_start_ts")
+        if start_ts:
+            ha_pub("trip_duration_sec", int(now() - start_ts))
+            iso = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+            ha_pub("trip_start_dt", iso)
+            ha_pub("trip_start", datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M"))
+        odo, odo0 = lv(vin, "Odometer"), s.get("trip_start_odo")
+        dist = None
+        if isinstance(odo, (int, float)) and isinstance(odo0, (int, float)):
+            dist = max(0.0, odo - odo0)
+            ha_pub("trip_distance", round(dist, 1))
+        er, er0 = lv(vin, "EnergyRemaining"), s.get("trip_start_er")
+        if isinstance(er, (int, float)) and isinstance(er0, (int, float)):
+            kwh = max(0.0, er0 - er)
+            ha_pub("trip_kwh", round(kwh, 2))
+            if dist and dist > 0.1:
+                ha_pub("trip_avg_kwh", round(kwh * 1000.0 / dist, 1))   # Wh/km
 
 
 def ticker():
