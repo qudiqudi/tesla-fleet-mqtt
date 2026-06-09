@@ -14,6 +14,7 @@ TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
 h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 MARK = "/*html_stripped*/"
+FILT = "/*coords_filtered*/"
 MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on the OSM basemap
 MARKER_SIZE = 6
 
@@ -36,6 +37,17 @@ def clean_panel(p):
                                     "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
                                     "config": {"showLegend": False},
                                     "tooltip": True}]}
+    # Drop null/zero coordinates (GPS dropouts log as lat=0,lng=0 -> "Null Island" in the
+    # Atlantic). teslalogger's old map plugins skipped these; native geomap plots them.
+    # Wrap the query once to filter them out. Idempotent via FILT marker.
+    for tgt in p.get("targets", []):
+        sql = tgt.get("rawSql") or ""
+        if ("lat" in sql) and (FILT not in sql):
+            tgt["rawSql"] = ("SELECT * FROM (\n%s\n) cf "
+                             "WHERE lat IS NOT NULL AND lng IS NOT NULL AND lat<>0 AND lng<>0 %s"
+                             % (sql, FILT))
+            tgt["format"] = "table"
+            n += 1
     # Per-layer touch-ups (idempotent):
     #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
     #  - set a high-contrast marker color/size under config.style (the proper nesting)
