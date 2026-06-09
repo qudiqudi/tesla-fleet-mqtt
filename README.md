@@ -77,11 +77,13 @@ bash scripts/get-token.sh    # paste code; confirms "vehicle_location present"; 
 ```
 Put the refresh token in `.env` as `TESLA_REFRESH_TOKEN`. Then pair the virtual key on your phone: open `https://tesla.com/_ak/<PARTNER_DOMAIN>` and approve.
 
-### 7. Start the stack and register telemetry
+### 7. Start the stack
 ```
 docker compose up -d
-bash scripts/register-telemetry.sh     # expect updated_vehicles:1
 ```
+The `tesla-register` one-shot registers the telemetry config automatically on every deploy
+(idempotent), waiting for the bridge's token so it never forks the refresh-token lineage. You
+only run `register-telemetry.sh` by hand for an immediate re-register without a redeploy.
 
 ### 8. Verify
 ```
@@ -97,7 +99,7 @@ The car opens the telemetry stream on its next wake/drive; then `tesla/<VIN>/v/.
 - `tesla/<VIN>/alerts/<name>/current`, `tesla/<VIN>/errors/<name>`, `tesla/<VIN>/connectivity`.
 - Commands in: `tesla/cmd/<command>` with a JSON body. Results: `tesla/cmd_result/<command>`.
 
-The stack streams a 19-field default; the full set of ~260 streamable fields is in [`FIELDS.md`](FIELDS.md) — add any to `scripts/register-telemetry.sh` and re-run it.
+The stack streams a sensible field default; the full set of ~260 streamable fields is in [`FIELDS.md`](FIELDS.md) — add any to `scripts/register-telemetry.sh`; the next deploy re-registers automatically (`tesla-register`).
 
 Examples:
 ```
@@ -173,7 +175,7 @@ This is a standard git-syncable compose stack, so any of these work:
 If your tool keeps secrets out of files on disk (e.g. Dockhand secret vars), don't run the scripts on the host — they wouldn't see the secrets, and reading them via `docker inspect` is leaky. Instead enable the `tools` profile and run the scripts inside the `tesla-tools` container, which Dockhand injects the secrets into directly:
 ```
 COMPOSE_PROFILES=history,tools          # in your env
-docker exec tesla-tools bash scripts/register-telemetry.sh
+docker exec tesla-tools bash scripts/register-telemetry.sh   # ad-hoc; tesla-register does this on every deploy
 docker exec tesla-tools bash scripts/telemetry-status.sh
 docker exec -it tesla-tools bash scripts/send-cmd.sh flash_lights
 ```

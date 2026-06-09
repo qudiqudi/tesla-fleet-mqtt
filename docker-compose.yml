@@ -210,6 +210,38 @@ services:
       HA_DEVICE_MANUFACTURER: ${HA_DEVICE_MANUFACTURER:-Tesla}
       HA_DISCOVERY_INTERVAL: ${HA_DISCOVERY_INTERVAL:-300}
 
+  # Register the fleet telemetry config on every deploy (idempotent — re-registering the same
+  # field set is a no-op), so field-list changes apply without a manual exec. One-shot. It waits
+  # for the bridge's shared access token (ACCESS_TOKEN_REQUIRED=1) so it never refreshes — and
+  # forks — the refresh-token lineage itself.
+  tesla-register:
+    <<: *common
+    build: ${STACK_DIR:-.}/tools
+    container_name: tesla-register
+    restart: "no"
+    depends_on:
+      - tesla-http-proxy
+      - tesla-cmd-bridge
+    volumes:
+      - ${STACK_DIR:-.}/scripts:/app/scripts:ro
+      - ${STACK_DIR:-.}/proxy:/app/proxy:ro
+      - ${STACK_DIR:-.}/certs:/app/certs:ro
+      - tesla-bridge-data:/bridge-data:ro
+    environment:
+      TESLA_VIN: ${TESLA_VIN}
+      TELEMETRY_HOST: ${TELEMETRY_HOST}
+      TELEMETRY_PORT: ${TELEMETRY_PORT}
+      TESLA_AUTH_URL: ${TESLA_AUTH_URL}
+      PROXY_URL: https://tesla-http-proxy:4443
+      LOCATION_INTERVAL: ${LOCATION_INTERVAL:-1}
+      SPEED_INTERVAL: ${SPEED_INTERVAL:-1}
+      BRIDGE_ACCESS_TOKEN_FILE: /bridge-data/access_token
+      ACCESS_TOKEN_REQUIRED: "1"
+    command:
+      - sh
+      - -c
+      - 'i=0; until [ -s /bridge-data/access_token ]; do i=$((i+1)); [ "$i" -ge 60 ] && { echo "register: bridge token not ready after 120s, skipping"; exit 0; }; sleep 2; done; exec bash /app/scripts/register-telemetry.sh'
+
   # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
   # secrets stay in the container env (no secret file, no docker inspect). Profile "tools".
   tesla-tools:
