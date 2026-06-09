@@ -68,7 +68,23 @@ jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
       TpmsPressureFl:  {interval_seconds: 300},
       TpmsPressureFr:  {interval_seconds: 300},
       TpmsPressureRl:  {interval_seconds: 300},
-      TpmsPressureRr:  {interval_seconds: 300}
+      TpmsPressureRr:  {interval_seconds: 300},
+      Version:             {interval_seconds: 600},
+      SoftwareUpdateVersion: {interval_seconds: 600},
+      SoftwareUpdateDownloadPercentComplete: {interval_seconds: 60},
+      SoftwareUpdateInstallationPercentComplete: {interval_seconds: 60},
+      DestinationName:     {interval_seconds: 30},
+      DestinationLocation: {interval_seconds: 30},
+      MinutesToArrival:    {interval_seconds: 30},
+      RouteTrafficMinutesDelay: {interval_seconds: 60},
+      ExpectedEnergyPercentAtTripArrival: {interval_seconds: 60},
+      GpsHeading:          {interval_seconds: 5},
+      TimeToFullCharge:    {interval_seconds: 60},
+      FastChargerType:     {interval_seconds: 60},
+      FdWindow:            {interval_seconds: 30},
+      FpWindow:            {interval_seconds: 30},
+      RdWindow:            {interval_seconds: 30},
+      RpWindow:            {interval_seconds: 30}
     }
   }
 }' > /tmp/tesla-tcfg.json
