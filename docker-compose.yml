@@ -179,8 +179,8 @@ services:
       POS_DRIVE_INTERVAL: ${POS_DRIVE_INTERVAL:-1}
       # charging-row cadence (s) -> resolution of the charge curves
       CHARGE_ROW_INTERVAL: ${CHARGE_ROW_INTERVAL:-10}
-      # unit fallback until SettingDistanceUnit streams: "metric" or "imperial"
-      TLW_ASSUME_UNIT: ${TLW_ASSUME_UNIT:-metric}
+      # distance unit: auto (follow car) | metric | imperial (force; use if firmware misreports)
+      TLW_DISTANCE_UNIT: ${TLW_DISTANCE_UNIT:-auto}
 
   # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
   # secrets stay in the container env (no secret file, no docker inspect). Profile "tools".

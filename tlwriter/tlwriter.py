@@ -49,10 +49,13 @@ CHARGE_ROW_INTERVAL = float(os.environ.get("CHARGE_ROW_INTERVAL", "60"))
 
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
-# km / km-h, so convert when the car reports miles. SettingDistanceUnit drives it (register
-# it in telemetry); TLW_ASSUME_UNIT ("metric"|"imperial") is the fallback until it streams.
+# km / km-h, so convert when the car reports miles. TLW_DISTANCE_UNIT:
+#   auto (default) -> follow the car's SettingDistanceUnit field
+#   metric|imperial -> force it, overriding SettingDistanceUnit. Use "imperial" when a
+#   firmware bug streams miles while the car is set to km (Tesla regression seen 2026-06);
+#   set back to auto once the firmware is fixed.
 DIST_FIELDS = {"VehicleSpeed", "Odometer", "RatedRange", "IdealBatteryRange", "EstBatteryRange"}
-ASSUME_IMPERIAL = os.environ.get("TLW_ASSUME_UNIT", "metric").lower().startswith(("imp", "mi"))
+DISTANCE_UNIT = os.environ.get("TLW_DISTANCE_UNIT", "auto").lower()
 
 lock = threading.Lock()
 latest = {}   # vin -> {field: value, "_ts": ts}
@@ -110,10 +113,12 @@ def lv(vin, f):
 
 
 def is_imperial(L):
-    u = L.get("SettingDistanceUnit")
-    if u is None:
-        return ASSUME_IMPERIAL
-    return "mi" in str(u).lower()   # "Miles"/"DistanceUnitMiles" -> True; km variants have no "mi"
+    if DISTANCE_UNIT.startswith(("imp", "mi")):
+        return True
+    if DISTANCE_UNIT.startswith(("met", "km")):
+        return False
+    u = L.get("SettingDistanceUnit")   # auto: trust the car's reported unit
+    return "mi" in str(u).lower() if u is not None else False
 
 
 def power_kw(vin):
