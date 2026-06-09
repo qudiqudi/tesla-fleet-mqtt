@@ -182,8 +182,9 @@ If the tool runs compose from an internal path that differs from the host path (
 - `synced: false` — normal right after registering. The car applies the config on its next wake/drive, not while asleep. A short drive is the reliable trigger.
 - `Unauthorized missing scopes vehicle_location` — your token lacks the location scope. Re-authorize **with `prompt_missing_scopes=true`** — Tesla reuses an existing consent and silently ignores added scopes without it. Verify with `get-token.sh`, which decodes the token's `scp` claim (Tesla doesn't return `scope` in the token response).
 - `permission denied` reading the key in the proxy/telemetry logs — the key files must be readable by the container user. Containers run as `PUID:PGID`; `generate-keys.sh` chmods them 644.
-- No state but command works — check it's not a broker ACL (if your broker restricts topics, grant the MQTT user `tesla/#`), and confirm the car actually connected: `docker logs tesla-fleet-telemetry` shows `socket_connected ... vehicle_device`.
+- No state but command works — check it's not a broker ACL (if your broker restricts topics, grant the MQTT user `tesla/#`; with Home Assistant discovery also grant `homeassistant/#`), and confirm the car actually connected: `docker logs tesla-fleet-telemetry` shows `socket_connected ... vehicle_device`.
 - `set_sentry_mode` reports 200 but the app still shows on — the app caches; trust `tesla/<VIN>/v/SentryMode`.
+- Commands 401 with `login_required` / "refresh_token is invalid" — the refresh-token lineage died. Tesla rotates the refresh token on every refresh, so only **one** process may refresh it: the bridge owns it and shares the resulting access token at `/data/access_token` (mounted read-only into `tesla-tools`), and the helper scripts read that instead of refreshing. Re-auth when it's truly dead: `bash scripts/auth-url.sh` → approve in browser → `bash scripts/get-token.sh` → put the new token in `TESLA_REFRESH_TOKEN` and redeploy. The bridge falls back to the env token when the persisted one fails and re-seeds the volume, so no manual file cleanup is needed.
 
 ## CI
 
