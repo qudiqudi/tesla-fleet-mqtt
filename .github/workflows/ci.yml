@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    name: privacy & secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Privacy / data-leak scan (generic + denylist)
+        env:
+          PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
+        run: python3 .github/scripts/privacy_scan.py
+      - name: gitleaks (secret detection)
+        run: |
+          v=8.18.4
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_linux_x64.tar.gz" | tar -xz gitleaks
+          ./gitleaks detect --no-git --redact -v --exit-code 1
+
+  guard:
+    name: repo guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No secrets/keys committed, .gitignore intact
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -qx '.env'; then echo "::error::.env must never be committed"; exit 1; fi
+          keymat=$(git ls-files certs keys proxy pubkey 2>/dev/null | grep -vE '(^|/)(\.gitkeep|README.*)$' || true)
+          if [ -n "$keymat" ]; then echo "::error::key/cert material tracked:"; echo "$keymat"; exit 1; fi
+          for must in '.env' 'keys/' 'certs/' 'config/config.json'; do
+            grep -qF "$must" .gitignore || { echo "::error::.gitignore no longer ignores $must"; exit 1; }
+          done
+          echo "guards ok"
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck (errors only)
+        run: |
+          mapfile -t sh < <(git ls-files '*.sh')
+          printf '%s\n' "${sh[@]}"
+          shellcheck --severity=error "${sh[@]}"
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: byte-compile (syntax)
+        run: python -m compileall -q .
+      - name: ruff (real errors only)
+        run: |
+          python -m pip install -q ruff
+          ruff check --select E9,F63,F7,F82 .
+
+  compose:
+    name: compose validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config (all profiles)
+        run: |
+          cp .env.example .env
+          docker compose --profile history --profile tools config -q
+          echo "compose valid"
+
+  dockerfiles:
+    name: hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          recursive: true
+          failure-threshold: error

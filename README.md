@@ -152,6 +152,12 @@ If the tool runs compose from an internal path that differs from the host path (
 - No state but command works — check it's not a broker ACL (if your broker restricts topics, grant the MQTT user `tesla/#`), and confirm the car actually connected: `docker logs tesla-fleet-telemetry` shows `socket_connected ... vehicle_device`.
 - `set_sentry_mode` reports 200 but the app still shows on — the app caches; trust `tesla/<VIN>/v/SentryMode`.
 
+## CI
+
+Every PR runs `.github/workflows/ci.yml`: a privacy/data-leak scan (`.github/scripts/privacy_scan.py` — private keys, tokens, VINs, IPs, e-mails) plus gitleaks, shellcheck, ruff, `docker compose config`, hadolint, and repo guards (no `.env`/keys committed, `.gitignore` intact). Make these required status checks on `main` so nothing auto-merges unless they pass.
+
+The privacy scan also reads an optional `PRIVACY_DENYLIST` repo secret (Settings -> Secrets and variables -> Actions): put your own personal strings there — domain, VIN, LAN/public IPs, host paths, name, e-mail — comma- or newline-separated. They stay in the secret (never in the repo), and any accidental commit of them fails the build. Findings are reported as `path:line: reason` only, never the matched text, since public CI logs are world-readable.
+
 ## Credits
 
 Built on Tesla's [fleet-telemetry](https://github.com/teslamotors/fleet-telemetry) and [vehicle-command](https://github.com/teslamotors/vehicle-command). MIT licensed — see `LICENSE`.
