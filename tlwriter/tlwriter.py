@@ -425,7 +425,17 @@ def main():
         r2 = c.fetchone()
         if r2 and r2[0]:
             unit_ref[VIN] = float(r2[0]); log("odometer reference: %.0f km" % unit_ref[VIN])
+        # Close session rows a previous run left open. Without this, every restart opens a
+        # new row without closing the old one -> overlapping OPEN rows and a stale "online"
+        # in the Status panel even when the car is asleep. Zero-length closes the orphans.
+        for tbl in ("state", "shiftstate", "drivestate", "chargingstate"):
+            c.execute("UPDATE %s SET EndDate=StartDate WHERE CarID=%%s AND "
+                      "(EndDate IS NULL OR EndDate < StartDate)" % tbl, (car_id,))
     threading.Thread(target=ticker, daemon=True).start()
+    # Seed an 'asleep' state (assume asleep until telemetry proves otherwise); the first
+    # message flips it to online/driving/charging, and the ticker returns it to asleep on idle.
+    with lock:
+        set_vstate(VIN, "asleep", now())
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tesla-tlwriter")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     client.on_connect = on_connect
