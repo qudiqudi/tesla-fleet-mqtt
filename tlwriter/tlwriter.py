@@ -172,8 +172,8 @@ def geocode_worker():
             wait = GEOCODE_MIN_INTERVAL - (now() - _geo_last)
             if wait > 0:
                 time.sleep(wait)
+            _geo_last = now()   # mark the attempt up front so failures are throttled too
             addr = geocode_address(lat, lng)
-            _geo_last = now()
             if addr:
                 with _geo_conn().cursor() as cur:
                     cur.execute("UPDATE pos SET address=%s WHERE id=%s AND (address IS NULL OR address='')",
