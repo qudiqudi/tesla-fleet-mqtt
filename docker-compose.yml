@@ -185,6 +185,7 @@ services:
     profiles: ["tools"]
     volumes:
       - ${STACK_DIR:-.}/scripts:/app/scripts:ro
+      - ${STACK_DIR:-.}/migration:/app/migration:ro
       - ${STACK_DIR:-.}/proxy:/app/proxy:ro
       - ${STACK_DIR:-.}/certs:/app/certs:ro
       - ${STACK_DIR:-.}/db:/app/db:ro
