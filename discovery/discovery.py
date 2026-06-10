@@ -213,8 +213,9 @@ ENTITIES = [
 
 for _side, _name in (("fl", "Front left"), ("fr", "Front right"),
                      ("rl", "Rear left"), ("rr", "Rear right")):
+    # field names are TpmsPressureFl/Fr/Rl/Rr (capitalize, NOT upper — topics are case-sensitive)
     ENTITIES.append(("sensor", "tpms_pressure_%s" % _side, {
-        "name": "TPMS %s" % _name, "state_topic": v("TpmsPressure%s" % _side.upper()),
+        "name": "TPMS %s" % _name, "state_topic": v("TpmsPressure%s" % _side.capitalize()),
         "device_class": "pressure", "unit_of_measurement": "bar", "icon": "mdi:tire",
         "value_template": "{{ value | float | round(2) }}"}))
 
@@ -236,11 +237,14 @@ def build_configs():
     return out
 
 
+# configs are constant for the process lifetime; build and serialize once, not every republish
+CONFIGS = [(topic, json.dumps(cfg, ensure_ascii=False)) for topic, cfg in build_configs()]
+
+
 def publish_all(client):
-    configs = build_configs()
-    for topic, cfg in configs:
-        client.publish(topic, json.dumps(cfg, ensure_ascii=False), qos=1, retain=True)
-    log("published %d discovery configs for %s" % (len(configs), VIN))
+    for topic, payload in CONFIGS:
+        client.publish(topic, payload, qos=1, retain=True)
+    log("published %d discovery configs for %s" % (len(CONFIGS), VIN))
 
 
 def on_connect(client, userdata, flags, reason_code, properties=None):

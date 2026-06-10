@@ -14,10 +14,7 @@ CMD="${1:-flash_lights}"
 BODY='{}'
 [ "$#" -ge 2 ] && BODY="$2"
 BASE="${MQTT_TOPIC_BASE%/}"
-
-MQ_HOST="${MQTT_HOST:-mosquitto}"; MQ_PORT="${MQTT_PORT:-1883}"
-pub(){ mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
-sub(){ mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+# pub()/sub() come from _env.sh
 
 echo "-> $BASE/cmd/$CMD   body=$BODY"
 sub -t "$BASE/cmd_result/$CMD" -C 1 -W 20 -v &

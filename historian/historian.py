@@ -17,13 +17,14 @@ import time
 
 import paho.mqtt.client as mqtt
 from influxdb_client import InfluxDBClient, Point
-from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client.client.write_api import WriteOptions
 
 MQTT_HOST = os.environ.get("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_USER = os.environ.get("MQTT_USER", "tesla")
 MQTT_PASS = os.environ["MQTT_PASSWORD"]
 BASE = os.environ.get("MQTT_TOPIC_BASE", "tesla").rstrip("/")
+REPLAY_GRACE = float(os.environ.get("REPLAY_GRACE", "10"))  # ignore retained replay for Ns after connect
 
 INFLUX_URL = os.environ.get("INFLUX_URL", "http://influxdb:8086")
 INFLUX_TOKEN = os.environ["INFLUX_TOKEN"]
@@ -32,7 +33,9 @@ INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "tesla")
 MEASUREMENT = os.environ.get("INFLUX_MEASUREMENT", "vehicle")
 
 influx = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
-write_api = influx.write_api(write_options=SYNCHRONOUS)
+# batch off-thread instead of one blocking HTTP POST per MQTT message on the callback thread
+# (a drive streams several fields per second; synchronous writes back the broker up)
+write_api = influx.write_api(write_options=WriteOptions(batch_size=500, flush_interval=1000))
 
 
 def log(*a):
@@ -53,7 +56,9 @@ def build_point(vin, field, raw):
     if isinstance(v, (int, float)):
         return p.field(field, float(v))
     if isinstance(v, dict):
-        if "latitude" in v and "longitude" in v:
+        # a Location without a GPS fix carries null coordinates; fall through to the
+        # generic flattener (which skips nulls) instead of crashing on float(None)
+        if isinstance(v.get("latitude"), (int, float)) and isinstance(v.get("longitude"), (int, float)):
             return p.field("Latitude", float(v["latitude"])).field("Longitude", float(v["longitude"]))
         wrote = False
         for k, val in v.items():
@@ -71,15 +76,25 @@ def build_point(vin, field, raw):
         return p.field(field, str(v))
 
 
+_connect_ts = 0.0
+
+
 def on_connect(client, userdata, flags, reason_code, properties=None):
+    global _connect_ts
     if reason_code != 0:
         log("mqtt: connect failed: %s" % reason_code); return
+    _connect_ts = time.time()
     topic = "%s/+/v/#" % BASE
     client.subscribe(topic, qos=1)
     log("mqtt: connected, subscribed to %s -> influx %s/%s" % (topic, INFLUX_ORG, INFLUX_BUCKET))
 
 
 def on_message(client, userdata, msg):
+    # The publisher retains every message, so the broker REPLAYS the last value of each topic
+    # on (re)subscribe. Points carry no source timestamp (stamped at write time), so writing
+    # that replay burst would record hours-old values as happening now on every reconnect.
+    if getattr(msg, "retain", False) and (time.time() - _connect_ts) < REPLAY_GRACE:
+        return
     parts = msg.topic.split("/")
     try:
         vi = parts.index("v")
@@ -87,7 +102,13 @@ def on_message(client, userdata, msg):
         field = parts[vi + 1]
     except (ValueError, IndexError):
         return
-    pt = build_point(vin, field, msg.payload.decode("utf-8", "replace"))
+    try:
+        pt = build_point(vin, field, msg.payload.decode("utf-8", "replace"))
+    except Exception as e:
+        # never let one malformed payload crash the MQTT loop (a bad retained message
+        # would replay on every reconnect -> permanent crash loop)
+        log("bad payload on %s: %r" % (msg.topic, e))
+        return
     if pt is None:
         return
     try:

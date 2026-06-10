@@ -49,7 +49,9 @@ ONLINE_TIMEOUT = float(os.environ.get("ONLINE_TIMEOUT", "180"))
 # teslalogger's quicker sleep detection). Small grace absorbs brief reconnects.
 CONN_ASLEEP_GRACE = float(os.environ.get("CONN_ASLEEP_GRACE", "20"))
 TICK_S = float(os.environ.get("TICK_S", "10"))
-POS_DRIVE_INTERVAL = float(os.environ.get("POS_DRIVE_INTERVAL", "10"))
+# follows the registered Location streaming cadence (LOCATION_INTERVAL) unless overridden,
+# so raising the stream rate in register-telemetry.sh adjusts the pos cadence with it
+POS_DRIVE_INTERVAL = float(os.environ.get("POS_DRIVE_INTERVAL", os.environ.get("LOCATION_INTERVAL", "1")))
 POS_CHARGE_INTERVAL = float(os.environ.get("POS_CHARGE_INTERVAL", "60"))
 POS_IDLE_INTERVAL = float(os.environ.get("POS_IDLE_INTERVAL", "600"))
 CHARGE_ROW_INTERVAL = float(os.environ.get("CHARGE_ROW_INTERVAL", "60"))
@@ -84,6 +86,21 @@ MI_TO_KM = 1.609344
 DIST_FIELDS = {"VehicleSpeed", "Odometer", "RatedRange", "IdealBatteryRange", "EstBatteryRange"}
 DISTANCE_UNIT = os.environ.get("TLW_DISTANCE_UNIT", "auto").lower()
 IMP_CUTOFF = float(os.environ.get("TLW_IMPERIAL_CUTOFF", "0.75"))  # odo < cutoff*known_km -> miles
+
+# Power/speed stream null when inactive; that null IS the live value (0), not a gap. Keeping
+# the last non-null value instead left e.g. a stale DCChargingPower from a past supercharge
+# in latest[], inflating every later AC session's power sum.
+NULL_ZERO_FIELDS = {"VehicleSpeed", "ACChargingPower", "DCChargingPower"}
+# Fields consumed as numbers below. Some firmwares marshal numerics as JSON strings ("4.5");
+# coerce here, and never store a non-numeric value that would crash the tick arithmetic later.
+NUMERIC_FIELDS = {"VehicleSpeed", "Odometer", "Soc", "RatedRange", "IdealBatteryRange",
+                  "EstBatteryRange", "OutsideTemp", "InsideTemp", "ACChargingPower",
+                  "DCChargingPower", "ACChargingEnergyIn", "DCChargingEnergyIn",
+                  "ChargerVoltage", "PackVoltage", "PackCurrent", "ModuleTempMin",
+                  "ModuleTempMax", "EnergyRemaining", "ChargeRateMilePerHour",
+                  "TpmsPressureFl", "TpmsPressureFr", "TpmsPressureRl", "TpmsPressureRr",
+                  "SoftwareUpdateDownloadPercentComplete",
+                  "SoftwareUpdateInstallationPercentComplete", "GpsHeading"}
 unit_ref = {}   # vin -> highest odometer seen, in km (detection reference, seeded from DB)
 unit_imp = {}   # vin -> True if telemetry currently looks imperial
 
@@ -91,8 +108,7 @@ lock = threading.Lock()
 latest = {}   # vin -> {field: value, "_ts": ts}
 active = {}   # vin -> {"drive": ts, "charge": ts}
 state = {}    # vin -> session dict
-conn_status = {}   # vin -> "CONNECTED" / "DISCONNECTED" (from the connectivity topic)
-conn_ts = {}       # vin -> when that status arrived
+conn = {}     # vin -> (status, ts): "CONNECTED"/"DISCONNECTED" from the connectivity topic
 _last_version = {}     # vin -> last firmware written to car_version
 _last_tpms = {}        # (vin, tireid) -> last pressure written to TPMS
 TPMS_TIRE = {"TpmsPressureFl": 1, "TpmsPressureFr": 2, "TpmsPressureRl": 3, "TpmsPressureRr": 4}
@@ -271,8 +287,13 @@ def power_kw(vin):
     return None
 
 
+def _range_or_rated(vin, primary):
+    v = lv(vin, primary)
+    return v if v is not None else lv(vin, "RatedRange")
+
+
 def ideal_range(vin):
-    return lv(vin, "IdealBatteryRange") if lv(vin, "IdealBatteryRange") is not None else lv(vin, "RatedRange")
+    return _range_or_rated(vin, "IdealBatteryRange")
 
 
 def cell_temp(vin):
@@ -283,11 +304,23 @@ def cell_temp(vin):
 
 
 def est_range(vin):
-    return lv(vin, "EstBatteryRange") if lv(vin, "EstBatteryRange") is not None else lv(vin, "RatedRange")
+    return _range_or_rated(vin, "EstBatteryRange")
 
 
 def as_int(x):
     return int(round(x)) if isinstance(x, (int, float)) else None
+
+
+def gear_letter(g):
+    # Gear streams "D"/"R"/"N"/"P" or an enum string like "ShiftStateD". Strip the prefix and
+    # match exactly — suffix matching classified ShiftStateInvalid (ends in D) as driving.
+    if g is None:
+        return None
+    s = str(g)
+    if s.startswith("ShiftState"):
+        s = s[len("ShiftState"):]
+    s = s.upper()
+    return s if s in ("P", "D", "R", "N") else None
 
 
 def truthy_state(s, *markers):
@@ -318,11 +351,7 @@ def set_vstate(vin, newstate, ts):
 
 
 def set_shift(vin, gear, ts):
-    g = None
-    if gear is not None:
-        u = str(gear).upper()[-1:]
-        if u in ("P", "D", "R", "N"):
-            g = u
+    g = gear_letter(gear)
     s = st(vin)
     if s["shift"] == g:
         return
@@ -370,7 +399,7 @@ def write_charging_row(vin, ts):
         """INSERT INTO charging (battery_level,charge_energy_added,charger_power,Datum,
            ideal_battery_range_km,charger_voltage,outside_temp,battery_range_km,CarID)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        (lv(vin, "Soc") or 0, (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0),
+        (lv(vin, "Soc"), (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0),
          (lv(vin, "ACChargingPower") or 0) + (lv(vin, "DCChargingPower") or 0), dts(ts),
          (ideal_range(vin) or 0), as_int(lv(vin, "ChargerVoltage")), lv(vin, "OutsideTemp"),
          est_range(vin), car_id))
@@ -506,8 +535,7 @@ def on_message(client, userdata, msg):
             return
         if status:
             with lock:
-                conn_status[parts[-2]] = status
-                conn_ts[parts[-2]] = now()
+                conn[parts[-2]] = (status, now())
         return
     try:
         vi = parts.index("v"); vin = parts[vi - 1]; field = parts[vi + 1]
@@ -515,11 +543,19 @@ def on_message(client, userdata, msg):
         return
     raw = msg.payload.decode("utf-8", "replace").strip()
     if raw in ("", "null"):
-        return
-    try:
-        val = json.loads(raw)
-    except json.JSONDecodeError:
-        val = raw
+        if field not in NULL_ZERO_FIELDS:
+            return
+        val = 0
+    else:
+        try:
+            val = json.loads(raw)
+        except json.JSONDecodeError:
+            val = raw
+        if field in NUMERIC_FIELDS and not isinstance(val, (int, float)):
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                return   # garbage in a numeric field: never store it
     t = now()
     # The publisher retains every message, so the broker REPLAYS the last value of each topic
     # on (re)subscribe. That replay (a burst right after connect) must not count as liveness, or
@@ -551,7 +587,7 @@ def on_message(client, userdata, msg):
             active[vin]["drive"] = t
             if val > s["max_speed"]:
                 s["max_speed"] = val
-        elif field == "Gear" and val is not None and str(val).upper()[-1:] in ("D", "R", "N"):
+        elif field == "Gear" and gear_letter(val) in ("D", "R", "N"):
             active[vin]["drive"] = t
         elif field in ("ACChargingPower", "DCChargingPower") and isinstance(val, (int, float)) and val > CHARGE_POWER_MIN:
             active[vin]["charge"] = t
@@ -672,48 +708,65 @@ def publish_ha(vin):
                 ha_pub("trip_avg_kwh", round(kwh * 1000.0 / dist, 1))   # Wh/km
 
 
+def tick_vin(vin, t):
+    L = latest[vin]
+    cs, cts = conn.get(vin, (None, 0))
+    disc = cs == "DISCONNECTED" and (t - cts) > CONN_ASLEEP_GRACE
+    if (t - L.get("_ts", 0)) > ONLINE_TIMEOUT or disc:
+        # offline / asleep: close any open session and mark state (connectivity catches
+        # it sooner than waiting out the telemetry-silence timeout)
+        ots = L.get("_ts", t)
+        if st(vin)["mode"] is not None:
+            set_mode(vin, None, ots)
+        set_vstate(vin, "asleep", ots)
+        set_shift(vin, None, ots)
+        publish_ha(vin)
+        return
+    a = active.get(vin, {})
+    charging = (t - a.get("charge", 0)) < CHARGE_END_TIMEOUT
+    moving = (t - a.get("drive", 0)) < DRIVE_END_TIMEOUT
+    if charging:
+        set_mode(vin, "charge", t)
+    elif moving:
+        set_mode(vin, "drive", t)
+    else:
+        set_mode(vin, None, t)
+    s = st(vin)
+    # a session that opened without a GPS fix (or with the DB down) has no opening row yet;
+    # set_mode() won't re-enter the same mode, so retry the open here until it sticks —
+    # otherwise the whole drive/charge would silently go unlogged
+    if s["mode"] == "drive" and s["drivestate_id"] is None:
+        open_drive(vin, t)
+    elif s["mode"] == "charge" and s["chargingstate_id"] is None:
+        open_charge(vin, t)
+    if s["mode"] == "drive":
+        interval = POS_DRIVE_INTERVAL
+    elif s["mode"] == "charge":
+        interval = POS_CHARGE_INTERVAL
+    else:
+        interval = POS_IDLE_INTERVAL
+    if (t - s["last_pos_ts"]) >= interval:
+        write_pos(vin, t)
+    if s["mode"] == "charge" and (t - s["last_charge_row_ts"]) >= CHARGE_ROW_INTERVAL:
+        write_charging_row(vin, t)
+    set_vstate(vin, "driving" if s["mode"] == "drive" else
+                    "charging" if s["mode"] == "charge" else "online", t)
+    set_shift(vin, lv(vin, "Gear"), t)
+    publish_ha(vin)
+
+
 def ticker():
     while True:
         time.sleep(TICK_S)
         t = now()
         with lock:
             for vin in list(latest.keys()):
-                L = latest[vin]
-                disc = conn_status.get(vin) == "DISCONNECTED" and (t - conn_ts.get(vin, 0)) > CONN_ASLEEP_GRACE
-                if (t - L.get("_ts", 0)) > ONLINE_TIMEOUT or disc:
-                    # offline / asleep: close any open session and mark state (connectivity catches
-                    # it sooner than waiting out the telemetry-silence timeout)
-                    ots = L.get("_ts", t)
-                    if st(vin)["mode"] is not None:
-                        set_mode(vin, None, ots)
-                    set_vstate(vin, "asleep", ots)
-                    set_shift(vin, None, ots)
-                    publish_ha(vin)
-                    continue
-                a = active.get(vin, {})
-                charging = (t - a.get("charge", 0)) < CHARGE_END_TIMEOUT
-                moving = (t - a.get("drive", 0)) < DRIVE_END_TIMEOUT
-                if charging:
-                    set_mode(vin, "charge", t)
-                elif moving:
-                    set_mode(vin, "drive", t)
-                else:
-                    set_mode(vin, None, t)
-                s = st(vin)
-                if s["mode"] == "drive":
-                    interval = POS_DRIVE_INTERVAL
-                elif s["mode"] == "charge":
-                    interval = POS_CHARGE_INTERVAL
-                else:
-                    interval = POS_IDLE_INTERVAL
-                if (t - s["last_pos_ts"]) >= interval:
-                    write_pos(vin, t)
-                if s["mode"] == "charge" and (t - s["last_charge_row_ts"]) >= CHARGE_ROW_INTERVAL:
-                    write_charging_row(vin, t)
-                set_vstate(vin, "driving" if s["mode"] == "drive" else
-                                "charging" if s["mode"] == "charge" else "online", t)
-                set_shift(vin, lv(vin, "Gear"), t)
-                publish_ha(vin)
+                try:
+                    tick_vin(vin, t)
+                except Exception as e:
+                    # one bad value/tick must not kill the thread — it's the only thing
+                    # writing pos rows and opening/closing sessions
+                    log("tick %s: %r" % (vin, e))
 
 
 def resume_sessions():
@@ -740,6 +793,15 @@ def resume_sessions():
             s["mode"] = "drive"
         if adopt("chargingstate", "StartChargingID", "chargingstate_id", "start_charging_id") and s["mode"] is None:
             s["mode"] = "charge"
+        if s["start_charging_id"]:
+            # restore the session's energy baseline from the opening charging row (its
+            # charge_energy_added holds the cumulative counter at charge start); without it
+            # close_charge() would record the car's whole lifetime energy counter as this
+            # session's charge_energy_added
+            c.execute("SELECT charge_energy_added FROM charging WHERE id=%s", (s["start_charging_id"],))
+            r = c.fetchone()
+            if r and r[0] is not None:
+                s["start_energy"] = float(r[0])
         for tbl in ("state", "shiftstate", "drivestate", "chargingstate"):
             c.execute("UPDATE %s SET EndDate=StartDate WHERE CarID=%%s AND EndDate IS NOT NULL "
                       "AND EndDate<StartDate" % tbl, (car_id,))

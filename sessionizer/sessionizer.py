@@ -39,19 +39,56 @@ DRIVE_END_TIMEOUT = float(os.environ.get("DRIVE_END_TIMEOUT", "300"))   # s
 CHARGE_END_TIMEOUT = float(os.environ.get("CHARGE_END_TIMEOUT", "180")) # s
 MIN_DRIVE_KM = float(os.environ.get("MIN_DRIVE_KM", "0.1"))
 TICK_S = float(os.environ.get("TICK_S", "20"))
+REPLAY_GRACE = float(os.environ.get("REPLAY_GRACE", "10"))  # ignore retained replay for Ns after connect
 
+# Fields consumed as numbers below. Some firmwares marshal numerics as JSON strings ("4.5");
+# coerce in on_message, and never store a non-numeric value that would crash the session math.
 NUMERIC = {"VehicleSpeed", "ACChargingPower", "DCChargingPower", "Soc", "Odometer",
            "Latitude", "Longitude", "OutsideTemp", "InsideTemp",
            "ACChargingEnergyIn", "DCChargingEnergyIn", "RatedRange"}
+# Power/speed stream null when inactive; that null IS the live value (0), not a gap.
+NULL_ZERO_FIELDS = {"VehicleSpeed", "ACChargingPower", "DCChargingPower"}
+
+MI_TO_KM = 1.609344
+# Same odometer-continuity unit detection as tlwriter: distance/speed stream in the car's
+# display unit and a firmware update can flip it to miles (regression seen 2026-06). The
+# odometer never drops, so a reading well below the known km figure means the stream went
+# imperial (~0.62x); convert until it recovers. Reference seeded from the drives table.
+DIST_FIELDS = {"VehicleSpeed", "Odometer", "RatedRange"}
+IMP_CUTOFF = float(os.environ.get("IMPERIAL_CUTOFF", "0.75"))
+unit_ref = {}   # vin -> highest odometer seen, in km
+unit_imp = {}   # vin -> True if telemetry currently looks imperial
+
+
+def detect_unit(vin, raw_odo):
+    ref = unit_ref.get(vin, 0.0)
+    if ref > 0 and raw_odo > 0:
+        if raw_odo < IMP_CUTOFF * ref and not unit_imp.get(vin):
+            unit_imp[vin] = True
+            log("%s telemetry imperial (odo %.0f vs %.0f km) -> converting" % (vin, raw_odo, ref))
+        elif raw_odo >= 0.9 * ref and unit_imp.get(vin):
+            unit_imp[vin] = False
+            log("%s telemetry metric again (odo %.0f) -> conversion off" % (vin, raw_odo))
+    km = raw_odo * MI_TO_KM if unit_imp.get(vin) else raw_odo
+    if km > ref:
+        unit_ref[vin] = km
+
+
+def gear_letter(g):
+    # Gear streams "D"/"R"/"N"/"P" or an enum string like "ShiftStateD". Strip the prefix and
+    # match exactly — suffix matching classified ShiftStateInvalid (ends in D) as driving.
+    if g is None:
+        return None
+    s = str(g)
+    if s.startswith("ShiftState"):
+        s = s[len("ShiftState"):]
+    s = s.upper()
+    return s if s in ("P", "D", "R", "N") else None
 
 
 def is_drive_gear(g):
-    # teslalogger drives on shift state R/N/D; park on P. Fleet telemetry Gear may be
-    # "D"/"R"/"N"/"P" or an enum string like "ShiftStateD".
-    if g is None:
-        return False
-    s = str(g).upper()
-    return s.endswith("D") or s.endswith("R") or s.endswith("N")
+    # teslalogger drives on shift state R/N/D; park on P.
+    return gear_letter(g) in ("D", "R", "N")
 
 lock = threading.Lock()
 latest = {}    # vin -> {field: value}
@@ -82,6 +119,10 @@ def db():
     return _db
 
 
+_pending = []   # failed session writes, retried from the ticker — a finished session row
+                # must survive the DB being down at the moment the session closes
+
+
 def write(sql, params):
     # mariadb drops the idle connection while parked; reconnect and retry once, quietly.
     global _db
@@ -93,8 +134,25 @@ def write(sql, params):
         except (pymysql.err.OperationalError, pymysql.err.InterfaceError):
             _db = None  # stale/dropped connection -> fresh connection on the retry
         except Exception as e:
-            log("db error: %s" % e); _db = None; return
-    log("db write failed after reconnect")
+            log("db error: %s" % e); _db = None; break
+    # session writes are idempotent upserts (unique vin+start_ts), so queue and retry from
+    # the ticker instead of losing the session forever
+    if len(_pending) < 1000:
+        _pending.append((sql, params))
+    log("db write failed, queued for retry (%d pending)" % len(_pending))
+
+
+def flush_pending():
+    global _db
+    while _pending:
+        sql, params = _pending[0]
+        try:
+            with db().cursor() as cur:
+                cur.execute(sql, params)
+        except Exception:
+            _db = None  # still down; keep the queue and try again next tick
+            return
+        _pending.pop(0)
 
 
 def lv(vin, field):
@@ -177,9 +235,14 @@ def transition(vin, new_mode, ts):
 
 # ---- mqtt -----------------------------------------------------------------
 
+_connect_ts = 0.0
+
+
 def on_connect(client, userdata, flags, reason_code, properties=None):
+    global _connect_ts
     if reason_code != 0:
         log("mqtt: connect failed: %s" % reason_code); return
+    _connect_ts = now()
     client.subscribe("%s/+/v/#" % BASE, qos=1)
     log("mqtt: connected, building sessions -> %s@%s/%s" % (DB_USER, DB_HOST, DB_NAME))
 
@@ -192,28 +255,48 @@ def on_message(client, userdata, msg):
         return
     raw = msg.payload.decode("utf-8", "replace").strip()
     if raw in ("", "null"):
-        return
-    try:
-        val = json.loads(raw)
-    except json.JSONDecodeError:
-        val = raw
+        if field not in NULL_ZERO_FIELDS:
+            return
+        val = 0
+    else:
+        try:
+            val = json.loads(raw)
+        except json.JSONDecodeError:
+            val = raw
+    if field in NUMERIC and not isinstance(val, (int, float)):
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return   # garbage in a numeric field: never store it
+    t = now()
+    # The publisher retains every message, so the broker REPLAYS the last value of each topic
+    # on (re)subscribe. That burst right after connect is stale state, not live activity — it
+    # must not open a ghost drive/charge from a past session's retained speed/power.
+    replay = bool(getattr(msg, "retain", False)) and (t - _connect_ts) < REPLAY_GRACE
     if field == "Location" and isinstance(val, dict):
         with lock:
             latest.setdefault(vin, {})["Latitude"] = val.get("latitude")
             latest.setdefault(vin, {})["Longitude"] = val.get("longitude")
         return
     with lock:
+        if field == "Odometer":
+            detect_unit(vin, val)
+        if field in DIST_FIELDS and unit_imp.get(vin):
+            val = val * MI_TO_KM   # normalise miles/(mph) to km/(km-h)
         latest.setdefault(vin, {})[field] = val
         active.setdefault(vin, {})
-        t = now()
-        if field == "VehicleSpeed" and isinstance(val, (int, float)) and val > DRIVE_SPEED_MIN:
+        if replay:   # value kept for last-known lookups, but no session activity from a replay
+            return
+        if ((field == "VehicleSpeed" and val > DRIVE_SPEED_MIN)
+                or (field == "Gear" and is_drive_gear(val))):
+            # movement or shift state R/N/D -> driving (teslalogger's triggers), unless charging
             active[vin]["drive"] = t
             if state.get(vin, {}).get("mode") != "charge":
                 transition(vin, "drive", t)
             st = state.get(vin, {}).get("session")
-            if st and val > st["max_speed"]:
+            if st and field == "VehicleSpeed" and val > st["max_speed"]:
                 st["max_speed"] = float(val)
-        elif field in ("ACChargingPower", "DCChargingPower") and isinstance(val, (int, float)) and val > CHARGE_POWER_MIN:
+        elif field in ("ACChargingPower", "DCChargingPower") and val > CHARGE_POWER_MIN:
             active[vin]["charge"] = t
             transition(vin, "charge", t)
             st = state.get(vin, {}).get("session")
@@ -221,28 +304,42 @@ def on_message(client, userdata, msg):
                 if val > st["max_power"]:
                     st["max_power"] = float(val)
                 st["charger_type"] = "AC" if field == "ACChargingPower" else "DC"
-        elif field == "Gear" and is_drive_gear(val):
-            # shift state R/N/D -> driving (teslalogger's drive trigger), unless charging
-            active[vin]["drive"] = t
-            if state.get(vin, {}).get("mode") != "charge":
-                transition(vin, "drive", t)
 
 
 def ticker():
     while True:
         time.sleep(TICK_S)
         t = now()
-        with lock:
-            for vin, st in list(state.items()):
-                mode = st.get("mode")
-                a = active.get(vin, {})
-                if mode == "drive" and (t - a.get("drive", 0)) > DRIVE_END_TIMEOUT:
-                    transition(vin, "park", a.get("drive", t))
-                elif mode == "charge" and (t - a.get("charge", 0)) > CHARGE_END_TIMEOUT:
-                    transition(vin, "park", a.get("charge", t))
+        try:
+            with lock:
+                flush_pending()
+                for vin, st in list(state.items()):
+                    mode = st.get("mode")
+                    a = active.get(vin, {})
+                    if mode == "drive" and (t - a.get("drive", 0)) > DRIVE_END_TIMEOUT:
+                        transition(vin, "park", a.get("drive", t))
+                    elif mode == "charge" and (t - a.get("charge", 0)) > CHARGE_END_TIMEOUT:
+                        transition(vin, "park", a.get("charge", t))
+        except Exception as e:
+            # the ticker is the only thing that closes timed-out sessions; it must survive
+            log("ticker error: %r" % e)
+
+
+def seed_unit_ref():
+    # last known km odometer per vin -> reference for the miles-vs-km detection
+    try:
+        with db().cursor() as cur:
+            cur.execute("SELECT vin, MAX(end_odometer) FROM drives GROUP BY vin")
+            for vin, odo in cur.fetchall():
+                if odo:
+                    unit_ref[vin] = float(odo)
+                    log("%s odometer reference: %.0f km" % (vin, unit_ref[vin]))
+    except Exception as e:
+        log("unit reference seed failed (detection starts cold): %s" % e)
 
 
 def main():
+    seed_unit_ref()
     threading.Thread(target=ticker, daemon=True).start()
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tesla-sessionizer")
     client.username_pw_set(MQTT_USER, MQTT_PASS)

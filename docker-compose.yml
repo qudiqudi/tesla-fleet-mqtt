@@ -23,7 +23,10 @@ services:
     container_name: mosquitto
     user: "${PUID:-1000}:${PGID:-1000}"
     ports:
-      - "${MQTT_PORT:-1883}:1883"
+      # MQTT_HOST_PORT moves only the host-published port; inside the docker network the
+      # broker always listens on 1883 (MQTT_PORT is the port CLIENTS dial — for the bundled
+      # mosquitto it must stay 1883, it is NOT this mapping's host side)
+      - "${MQTT_HOST_PORT:-1883}:1883"
     volumes:
       - ${STACK_DIR:-.}/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ${STACK_DIR:-.}/mosquitto/config/passwd:/mosquitto/config/passwd:ro
@@ -37,18 +40,24 @@ services:
     restart: "no"
     environment:
       TELEMETRY_HOST: ${TELEMETRY_HOST}
-      MQTT_HOST: ${MQTT_HOST}
-      MQTT_PORT: ${MQTT_PORT}
-      MQTT_USER: ${MQTT_USER}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-tesla}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-tesla}
     volumes:
       - ${STACK_DIR:-.}/templates:/templates:ro
       - ${STACK_DIR:-.}/config:/config
+    # JSON-escape each substituted value (a quote/backslash in MQTT_PASSWORD must not produce
+    # an unparseable config.json or a silently wrong password)
     command:
       - python
       - -c
-      - "import os; open('/config/config.json','w').write(os.path.expandvars(open('/templates/config.json.template').read()))"
+      - |
+        import json, os, re
+        tpl = open('/templates/config.json.template').read()
+        out = re.sub(r'\$\{(\w+)\}', lambda m: json.dumps(os.environ.get(m.group(1), ''))[1:-1], tpl)
+        open('/config/config.json', 'w').write(out)
 
   tesla-fleet-telemetry:
     <<: *common
@@ -97,11 +106,11 @@ services:
     depends_on:
       - tesla-http-proxy
     environment:
-      MQTT_HOST: ${MQTT_HOST}
-      MQTT_PORT: ${MQTT_PORT}
-      MQTT_USER: ${MQTT_USER}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-tesla}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-tesla}
       PROXY_URL: https://tesla-http-proxy:4443
       PROXY_CACERT: /certs/proxy-ca.pem
       TESLA_VIN: ${TESLA_VIN}
@@ -123,11 +132,11 @@ services:
     depends_on:
       - tesla-fleet-telemetry
     environment:
-      MQTT_HOST: ${MQTT_HOST}
-      MQTT_PORT: ${MQTT_PORT}
-      MQTT_USER: ${MQTT_USER}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-tesla}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-tesla}
       INFLUX_URL: ${INFLUX_URL:-http://influxdb:8086}
       INFLUX_TOKEN: ${INFLUX_TOKEN}
       INFLUX_ORG: ${INFLUX_ORG}
@@ -143,11 +152,11 @@ services:
     depends_on:
       - tesla-fleet-telemetry
     environment:
-      MQTT_HOST: ${MQTT_HOST}
-      MQTT_PORT: ${MQTT_PORT}
-      MQTT_USER: ${MQTT_USER}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-tesla}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-tesla}
       DB_HOST: ${DB_HOST:-mariadb}
       DB_PORT: ${DB_PORT:-3306}
       DB_USER: ${DB_USER:-tesla}
@@ -164,19 +173,21 @@ services:
     depends_on:
       - tesla-fleet-telemetry
     environment:
-      MQTT_HOST: ${MQTT_HOST}
-      MQTT_PORT: ${MQTT_PORT}
-      MQTT_USER: ${MQTT_USER}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-tesla}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-tesla}
       DB_HOST: ${DB_HOST:-mariadb}
       DB_PORT: ${DB_PORT:-3306}
       DB_USER: ${DB_USER:-tesla}
       DB_PASSWORD: ${DB_PASSWORD}
       TLW_DB_NAME: ${TLW_DB_NAME:-teslalogger}
       TESLA_VIN: ${TESLA_VIN}
-      # pos row cadence while driving (s); keep in sync with register-telemetry Location interval
-      POS_DRIVE_INTERVAL: ${POS_DRIVE_INTERVAL:-1}
+      # pos row cadence while driving (s); follows the registered Location streaming cadence
+      # (LOCATION_INTERVAL) so one .env setting drives both, POS_DRIVE_INTERVAL overrides
+      LOCATION_INTERVAL: ${LOCATION_INTERVAL:-1}
+      POS_DRIVE_INTERVAL: ${POS_DRIVE_INTERVAL:-${LOCATION_INTERVAL:-1}}
       # charging-row cadence (s) -> resolution of the charge curves
       CHARGE_ROW_INTERVAL: ${CHARGE_ROW_INTERVAL:-10}
       # distance unit: auto (follow car) | metric | imperial (force; use if firmware misreports)
@@ -203,11 +214,11 @@ services:
     depends_on:
       - tesla-fleet-telemetry
     environment:
-      MQTT_HOST: ${MQTT_HOST}
-      MQTT_PORT: ${MQTT_PORT}
-      MQTT_USER: ${MQTT_USER}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-tesla}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-tesla}
       TESLA_VIN: ${TESLA_VIN}
       HA_DISCOVERY_PREFIX: ${HA_DISCOVERY_PREFIX:-homeassistant}
       HA_DEVICE_NAME: ${HA_DEVICE_NAME:-Tesla}
@@ -235,7 +246,7 @@ services:
     environment:
       TESLA_VIN: ${TESLA_VIN}
       TELEMETRY_HOST: ${TELEMETRY_HOST}
-      TELEMETRY_PORT: ${TELEMETRY_PORT}
+      TELEMETRY_PORT: ${TELEMETRY_PORT:-443}
       TESLA_AUTH_URL: ${TESLA_AUTH_URL}
       PROXY_URL: https://tesla-http-proxy:4443
       LOCATION_INTERVAL: ${LOCATION_INTERVAL:-1}
@@ -245,7 +256,9 @@ services:
     # override the tools image's `sleep infinity` entrypoint so the command runs as a shell
     entrypoint: ["sh", "-c"]
     command:
-      - 'i=0; until [ -s /bridge-data/access_token ]; do i=$((i+1)); [ "$i" -ge 60 ] && { echo "register: bridge token not ready after 120s, skipping"; exit 0; }; sleep 2; done; exec bash /app/scripts/register-telemetry.sh'
+      # $$ keeps compose from interpolating the shell's $i (unescaped it became blank and the
+      # 120s give-up guard never fired, so a missing token hung the container forever)
+      - 'i=0; until [ -s /bridge-data/access_token ]; do i=$$((i+1)); [ "$$i" -ge 60 ] && { echo "register: bridge token not ready after 120s, skipping"; exit 0; }; sleep 2; done; exec bash /app/scripts/register-telemetry.sh'
 
   # Tools container: run the helper scripts here via `docker exec` so Dockhand-injected
   # secrets stay in the container env (no secret file, no docker inspect). Profile "tools".
@@ -263,11 +276,11 @@ services:
       # read the bridge's current access token so the scripts don't refresh (and fork) the lineage
       - tesla-bridge-data:/bridge-data:ro
     environment:
-      MQTT_HOST: ${MQTT_HOST}
-      MQTT_PORT: ${MQTT_PORT}
-      MQTT_USER: ${MQTT_USER}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-tesla}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE}
+      MQTT_TOPIC_BASE: ${MQTT_TOPIC_BASE:-tesla}
       BRIDGE_ACCESS_TOKEN_FILE: /bridge-data/access_token
       PROXY_URL: https://tesla-http-proxy:4443
       TESLA_VIN: ${TESLA_VIN}
