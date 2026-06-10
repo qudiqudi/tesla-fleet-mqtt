@@ -21,12 +21,12 @@ Run in the tools container:
   docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python migration/grafana-modernize.py
 """
 import os
-import requests
+
+from _grafana import folder_uid, for_each_dashboard, search_dashboards, walk_panels
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
-h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 
 # Angular graph keys we translate then strip.
 GRAPH_KEYS = ("yaxes", "xaxis", "seriesOverrides", "aliasColors", "legend", "lines",
@@ -262,51 +262,39 @@ def fix_xychart(p):
     }
 
 
-def convert(panels):
-    n = 0
-    for p in panels:
-        t = p.get("type")
-        opts = p.get("options") or {}
-        dfl = (p.get("fieldConfig") or {}).get("defaults") or {}
-        st_needs = ("valueMaps" in p) or ("perPage" in opts) \
-            or (opts.get("legend", {}).get("showLegend")) \
-            or (dfl.get("color", {}).get("mode") == "thresholds")
-        if t == "natel-discrete-panel" or (t == "state-timeline" and st_needs):
-            discrete_to_state_timeline(p); n += 1
-        elif t in ("grafana-worldmap-panel", "pr0ps-trackmap-panel"):
-            to_geomap(p); n += 1
-        elif t == "grafana-piechart-panel":
-            to_piechart(p); n += 1
-        elif t in ("graph", "timeseries") and needs_graph(p):
-            graph_to_timeseries(p); n += 1
-        elif t == "graph":
-            p["type"] = "timeseries"; n += 1
-        elif t == "xychart" and ("seriesMapping" in opts or "dims" in opts):
-            fix_xychart(p); n += 1
-        if "panels" in p:
-            n += convert(p["panels"])
-    return n
+def convert(p):
+    t = p.get("type")
+    opts = p.get("options") or {}
+    dfl = (p.get("fieldConfig") or {}).get("defaults") or {}
+    st_needs = ("valueMaps" in p) or ("perPage" in opts) \
+        or (opts.get("legend", {}).get("showLegend")) \
+        or (dfl.get("color", {}).get("mode") == "thresholds")
+    if t == "natel-discrete-panel" or (t == "state-timeline" and st_needs):
+        discrete_to_state_timeline(p)
+    elif t in ("grafana-worldmap-panel", "pr0ps-trackmap-panel"):
+        to_geomap(p)
+    elif t == "grafana-piechart-panel":
+        to_piechart(p)
+    elif t in ("graph", "timeseries") and needs_graph(p):
+        graph_to_timeseries(p)
+    elif t == "graph":
+        p["type"] = "timeseries"
+    elif t == "xychart" and ("seriesMapping" in opts or "dims" in opts):
+        fix_xychart(p)
+    else:
+        return 0
+    return 1
 
 
 def main():
-    folder_uid = None
-    for f in requests.get("%s/api/folders" % DST, headers=h, timeout=30).json():
-        if f.get("title") == FOLDER:
-            folder_uid = f.get("uid")
-    if not folder_uid:
+    fu = folder_uid(FOLDER, TOK, DST)
+    if not fu:
         print("folder '%s' not found" % FOLDER); return
-    items = requests.get("%s/api/search?type=dash-db&folderUIDs=%s" % (DST, folder_uid), headers=h, timeout=30).json()
+    items = search_dashboards(fu, TOK, DST)
     print("%d dashboards in '%s'" % (len(items), FOLDER))
-    for it in items:
-        full = requests.get("%s/api/dashboards/uid/%s" % (DST, it["uid"]), headers=h, timeout=30).json()
-        dash = full["dashboard"]
-        c = convert(dash.get("panels", []))
-        if c:
-            r = requests.post("%s/api/dashboards/db" % DST, headers=h, timeout=60,
-                              json={"dashboard": dash, "overwrite": True, "folderUid": folder_uid})
-            print("  %s: fixed %d panel(s) -> %s" % (dash.get("title"), c, r.status_code))
-        else:
-            print("  %s: nothing to fix" % dash.get("title"))
+    for_each_dashboard(fu, lambda d: walk_panels(d.get("panels", []), convert),
+                       TOK, DST, "  %s: fixed %d panel(s) -> %s", items=items,
+                       unchanged_msg="  %s: nothing to fix")
 
 
 if __name__ == "__main__":

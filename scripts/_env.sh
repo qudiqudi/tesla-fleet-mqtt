@@ -12,6 +12,12 @@ done
 
 need() { for v in "$@"; do [ -n "${!v:-}" ] || { echo "Missing $v in environment" >&2; exit 1; }; done; }
 
+# Broker credential wiring for the diagnostic/command scripts — one copy here so TLS/port/auth
+# changes apply to every script (callers: need MQTT_USER MQTT_PASSWORD first).
+MQ_HOST="${MQTT_HOST:-mosquitto}"; MQ_PORT="${MQTT_PORT:-1883}"
+pub(){ mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+sub(){ mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+
 # Return a Fleet API access token. PREFER the one tesla-cmd-bridge maintains (shared via a
 # read-only volume), so the helper scripts don't run their own refresh_token grant — Tesla
 # rotates the refresh token and independent refreshers fork the lineage, invalidating the

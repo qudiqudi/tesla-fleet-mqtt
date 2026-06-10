@@ -12,12 +12,12 @@ Run in the tools container:
 """
 import os
 import re
-import requests
+
+from _grafana import folder_uid, for_each_dashboard, search_dashboards
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
-h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 
 
 def rewrite_strings(o, rx):
@@ -43,28 +43,18 @@ def rewrite_strings(o, rx):
 
 
 def main():
-    folder_uid = None
-    for f in requests.get("%s/api/folders" % DST, headers=h, timeout=30).json():
-        if f.get("title") == FOLDER:
-            folder_uid = f.get("uid")
-    if not folder_uid:
+    fu = folder_uid(FOLDER, TOK, DST)
+    if not fu:
         print("folder '%s' not found" % FOLDER); return
-    items = requests.get("%s/api/search?type=dash-db&folderUIDs=%s" % (DST, folder_uid),
-                         headers=h, timeout=30).json()
+    items = search_dashboards(fu, TOK, DST)
     olds = [it["uid"][3:] for it in items if it["uid"].startswith("tl-")]
     if not olds:
         print("no tl- dashboards found"); return
     # match d/<old> or d-solo/<old> not already followed by more uid chars (so tl- ones skip)
     rx = re.compile(r"d/(" + "|".join(re.escape(u) for u in olds) + r")(?![A-Za-z0-9_-])")
     print("%d dashboards, %d link targets" % (len(items), len(olds)))
-    for it in items:
-        full = requests.get("%s/api/dashboards/uid/%s" % (DST, it["uid"]), headers=h, timeout=30).json()
-        dash = full["dashboard"]
-        c = rewrite_strings(dash, rx)
-        if c:
-            r = requests.post("%s/api/dashboards/db" % DST, headers=h, timeout=60,
-                              json={"dashboard": dash, "overwrite": True, "folderUid": folder_uid})
-            print("  %s: rewrote %d link(s) -> %s" % (dash.get("title"), c, r.status_code))
+    for_each_dashboard(fu, lambda d: rewrite_strings(d, rx), TOK, DST,
+                       "  %s: rewrote %d link(s) -> %s", items=items)
 
 
 if __name__ == "__main__":

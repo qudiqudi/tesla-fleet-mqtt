@@ -91,11 +91,23 @@ jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
   }
 }' > /tmp/tesla-tcfg.json
 
+# This runs unattended on every deploy (the tesla-register service), so the exit code is the
+# only signal: a down proxy or a Tesla 4xx/5xx must NOT end in a green "registered" deploy.
 echo "Registering via $PROXY_URL ..."
-curl -s --request POST "$PROXY_URL/api/1/vehicles/fleet_telemetry_config" \
+RESP=/tmp/tesla-tcfg-resp.json
+HTTP_CODE=$(curl -s -o "$RESP" -w '%{http_code}' --request POST "$PROXY_URL/api/1/vehicles/fleet_telemetry_config" \
   --cacert "$PROXY_CERT" \
   --header "Authorization: Bearer $ACCESS" \
   --header 'Content-Type: application/json' \
-  --data @/tmp/tesla-tcfg.json | jq .
+  --data @/tmp/tesla-tcfg.json) || { echo "registration request failed (proxy unreachable?)"; rm -f /tmp/tesla-tcfg.json "$RESP"; exit 1; }
 rm -f /tmp/tesla-tcfg.json
-echo "Expect updated_vehicles:1. If skipped_vehicles.missing_key: pair the virtual key and wake the car."
+jq . "$RESP" 2>/dev/null || cat "$RESP"
+if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+  echo "registration FAILED: HTTP $HTTP_CODE"; rm -f "$RESP"; exit 1
+fi
+if ! jq -e '(.response.updated_vehicles // .updated_vehicles) == 1' "$RESP" >/dev/null 2>&1; then
+  echo "registration NOT applied (updated_vehicles != 1). If skipped_vehicles.missing_key: pair the virtual key and wake the car."
+  rm -f "$RESP"; exit 1
+fi
+rm -f "$RESP"
+echo "Telemetry config registered (updated_vehicles: 1)."

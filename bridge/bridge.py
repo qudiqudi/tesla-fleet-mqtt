@@ -25,6 +25,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import paho.mqtt.client as mqtt
@@ -175,10 +176,12 @@ def _refresh_loop():
 
 def send_command(command, body):
     url = command_url(command)
-    r = None
-    for attempt in (1, 2):
-        token = get_token(force=(attempt == 2))
+    attempt = 1
+    while True:
         try:
+            # get_token inside the try: a refresh failure (auth outage) must surface as a
+            # result, not escape — the caller always publishes a cmd_result
+            token = get_token(force=(attempt == 2))
             r = requests.post(
                 url,
                 json=body,
@@ -186,13 +189,13 @@ def send_command(command, body):
                 verify=PROXY_CACERT,
                 timeout=30,
             )
-        except requests.RequestException as e:
+        except Exception as e:
             return 0, "request error: %s" % e
         if r.status_code == 401 and attempt == 1:
             log("cmd %s: 401, refreshing token and retrying" % command)
+            attempt = 2
             continue
         return r.status_code, r.text
-    return (r.status_code, r.text) if r is not None else (0, "no response")
 
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
@@ -201,6 +204,22 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         return
     client.subscribe(CMD_TOPIC, qos=1)
     log("mqtt: connected, subscribed to %s" % CMD_TOPIC)
+
+
+# Commands run off the MQTT network thread: a slow proxy/auth call (up to ~60s of timeouts)
+# inside on_message would stall the loop past the keepalive and the broker would drop the
+# connection mid-command. One worker keeps commands executing in publish order.
+_cmd_pool = ThreadPoolExecutor(max_workers=1)
+
+
+def _run_command(client, command, endpoint, body):
+    status, text = send_command(endpoint, body)
+    log("cmd %s -> %s -> %s %s" % (command, endpoint, status, text[:200]))
+    client.publish(
+        "%s/cmd_result/%s" % (BASE, command),
+        json.dumps({"status": status, "resp": text}),
+        qos=1,
+    )
 
 
 def on_message(client, userdata, msg):
@@ -215,13 +234,7 @@ def on_message(client, userdata, msg):
     if endpoint is None:
         log("cmd %s: no endpoint for this direction, ignoring" % command)
         return
-    status, text = send_command(endpoint, body)
-    log("cmd %s -> %s -> %s %s" % (command, endpoint, status, text[:200]))
-    client.publish(
-        "%s/cmd_result/%s" % (BASE, command),
-        json.dumps({"status": status, "resp": text}),
-        qos=1,
-    )
+    _cmd_pool.submit(_run_command, client, command, endpoint, body)
 
 
 def main():

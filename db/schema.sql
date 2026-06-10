@@ -5,6 +5,12 @@
 --   GRANT ALL PRIVILEGES ON tesla.* TO 'tesla'@'%';
 --   FLUSH PRIVILEGES;
 
+-- Existing installs: older versions also created idx_*_vin_start indexes duplicating the
+-- unique keys below. Drop them to halve the secondary-index write cost:
+--   ALTER TABLE drives  DROP INDEX idx_drive_vin_start;
+--   ALTER TABLE charges DROP INDEX idx_charge_vin_start;
+--   ALTER TABLE parks   DROP INDEX idx_park_vin_start;
+
 CREATE DATABASE IF NOT EXISTS tesla CHARACTER SET utf8mb4;
 USE tesla;
 
@@ -29,8 +35,7 @@ CREATE TABLE IF NOT EXISTS drives (
   avg_speed      DOUBLE       NULL,
   outside_temp   DOUBLE       NULL,
   source         VARCHAR(16)  NOT NULL DEFAULT 'live',   -- 'live' or 'backfill'
-  UNIQUE KEY uniq_drive (vin, start_ts),
-  KEY idx_drive_vin_start (vin, start_ts)
+  UNIQUE KEY uniq_drive (vin, start_ts)
 ) ENGINE=InnoDB;
 
 -- One row per charge session.
@@ -49,8 +54,7 @@ CREATE TABLE IF NOT EXISTS charges (
   lat           DOUBLE       NULL,
   lng           DOUBLE       NULL,
   source        VARCHAR(16)  NOT NULL DEFAULT 'live',
-  UNIQUE KEY uniq_charge (vin, start_ts),
-  KEY idx_charge_vin_start (vin, start_ts)
+  UNIQUE KEY uniq_charge (vin, start_ts)
 ) ENGINE=InnoDB;
 
 -- One row per park (idle) period; used for vampire-drain analysis.
@@ -66,6 +70,5 @@ CREATE TABLE IF NOT EXISTS parks (
   lat         DOUBLE       NULL,
   lng         DOUBLE       NULL,
   source      VARCHAR(16)  NOT NULL DEFAULT 'live',
-  UNIQUE KEY uniq_park (vin, start_ts),
-  KEY idx_park_vin_start (vin, start_ts)
+  UNIQUE KEY uniq_park (vin, start_ts)
 ) ENGINE=InnoDB;

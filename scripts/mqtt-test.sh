@@ -5,10 +5,7 @@ set -uo pipefail
 . "$(dirname "$0")/_env.sh"
 need MQTT_USER MQTT_PASSWORD MQTT_TOPIC_BASE TESLA_VIN
 BASE="${MQTT_TOPIC_BASE%/}"
-
-MQ_HOST="${MQTT_HOST:-mosquitto}"; MQ_PORT="${MQTT_PORT:-1883}"
-pub(){ mosquitto_pub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
-sub(){ mosquitto_sub -h "$MQ_HOST" -p "$MQ_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" "$@"; }
+# pub()/sub() come from _env.sh
 
 echo "=== 1. broker round-trip ==="
 pub -t "$BASE/diag" -r -m 'hello' 2>&1

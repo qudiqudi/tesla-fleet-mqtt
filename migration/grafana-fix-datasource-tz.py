@@ -22,29 +22,28 @@ Run in the tools container (admin/editor token; this stack's Grafana listens on 
 """
 import os
 
-import requests
+from _grafana import api
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 TZ = os.environ.get("DST_SESSION_TZ", "+00:00")   # numeric offset; "UTC" needs MariaDB tz tables
-h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 
 
 def main():
-    dss = requests.get("%s/api/datasources" % DST, headers=h, timeout=30).json()
+    dss = api("GET", "/api/datasources", TOK, DST).json()
     mysql = [d for d in dss if d.get("type") == "mysql"]
     if not mysql:
         print("no mysql datasource found")
         return
     for d in mysql:
-        full = requests.get("%s/api/datasources/uid/%s" % (DST, d["uid"]), headers=h, timeout=30).json()
+        full = api("GET", "/api/datasources/uid/%s" % d["uid"], TOK, DST).json()
         jd = full.setdefault("jsonData", {})
         if jd.get("timezone") == TZ:
             print("  %s: already %s" % (full["name"], TZ))
             continue
         jd["timezone"] = TZ
         # PUT keeps the existing password (secureJsonData is only changed if sent).
-        r = requests.put("%s/api/datasources/uid/%s" % (DST, d["uid"]), headers=h, timeout=30, json=full)
+        r = api("PUT", "/api/datasources/uid/%s" % d["uid"], TOK, DST, payload=full)
         print("  %s: session timezone -> %s (%s)" % (full["name"], TZ, r.status_code))
 
 
