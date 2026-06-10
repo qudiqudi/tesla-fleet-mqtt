@@ -711,7 +711,13 @@ def publish_ha(vin):
 def tick_vin(vin, t):
     L = latest[vin]
     cs, cts = conn.get(vin, (None, 0))
-    disc = cs == "DISCONNECTED" and (t - cts) > CONN_ASLEEP_GRACE
+    # Live telemetry vetoes the DISCONNECTED signal: fleet-telemetry can emit a stale/
+    # out-of-order DISCONNECTED for a parallel connection while the car streams on (seen
+    # 2026-06-10: a mid-drive flap marked the car asleep, truncated the drive and dropped
+    # 13 min of pos rows). When the car really sleeps, telemetry stops with the disconnect,
+    # so requiring both keeps the fast sleep detection.
+    silent = (t - L.get("_ts", 0)) > CONN_ASLEEP_GRACE
+    disc = cs == "DISCONNECTED" and (t - cts) > CONN_ASLEEP_GRACE and silent
     if (t - L.get("_ts", 0)) > ONLINE_TIMEOUT or disc:
         # offline / asleep: close any open session and mark state (connectivity catches
         # it sooner than waiting out the telemetry-silence timeout)
