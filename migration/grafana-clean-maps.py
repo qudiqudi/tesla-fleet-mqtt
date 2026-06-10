@@ -7,12 +7,12 @@ the lat/lng columns. Idempotent (marker comment). Run in the tools container:
   docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python migration/grafana-clean-maps.py
 """
 import os
-import requests
+
+from _grafana import folder_uid, for_each_dashboard, walk_panels
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
-h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 MARK = "/*html_stripped*/"
 FILT = "/*coords_filtered*/"
 MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on the OSM basemap
@@ -70,31 +70,12 @@ def clean_panel(p):
     return n
 
 
-def walk(panels):
-    n = 0
-    for p in panels:
-        n += clean_panel(p)
-        if "panels" in p:
-            n += walk(p["panels"])
-    return n
-
-
 def main():
-    folder_uid = None
-    for f in requests.get("%s/api/folders" % DST, headers=h, timeout=30).json():
-        if f.get("title") == FOLDER:
-            folder_uid = f.get("uid")
-    if not folder_uid:
+    fu = folder_uid(FOLDER, TOK, DST)
+    if not fu:
         print("folder not found"); return
-    items = requests.get("%s/api/search?type=dash-db&folderUIDs=%s" % (DST, folder_uid), headers=h, timeout=30).json()
-    for it in items:
-        full = requests.get("%s/api/dashboards/uid/%s" % (DST, it["uid"]), headers=h, timeout=30).json()
-        dash = full["dashboard"]
-        c = walk(dash.get("panels", []))
-        if c:
-            r = requests.post("%s/api/dashboards/db" % DST, headers=h, timeout=60,
-                              json={"dashboard": dash, "overwrite": True, "folderUid": folder_uid})
-            print("  %s: cleaned %d map(s) -> %s" % (dash.get("title"), c, r.status_code))
+    for_each_dashboard(fu, lambda d: walk_panels(d.get("panels", []), clean_panel),
+                       TOK, DST, "  %s: cleaned %d map(s) -> %s")
 
 
 if __name__ == "__main__":

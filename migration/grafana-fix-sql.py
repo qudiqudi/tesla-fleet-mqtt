@@ -23,12 +23,12 @@ Idempotent. Run in the tools container (this stack listens on :3003):
 """
 import os
 import re
-import requests
+
+from _grafana import folder_uid, for_each_dashboard, search_dashboards, walk_panels
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
-h = {"Authorization": "Bearer " + TOK, "Content-Type": "application/json"}
 UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
@@ -59,40 +59,27 @@ def fix_sql(sql):
     return sql if sql != orig else None
 
 
-def walk(panels):
+def fix_panel(p):
     n = 0
-    for p in panels:
-        for tgt in p.get("targets", []):
-            sql = tgt.get("rawSql")
-            if not sql:
-                continue
-            new = fix_sql(sql)
-            if new:
-                tgt["rawSql"] = new
-                n += 1
-        if "panels" in p:
-            n += walk(p["panels"])
+    for tgt in p.get("targets", []):
+        sql = tgt.get("rawSql")
+        if not sql:
+            continue
+        new = fix_sql(sql)
+        if new:
+            tgt["rawSql"] = new
+            n += 1
     return n
 
 
 def main():
-    folder_uid = None
-    for f in requests.get("%s/api/folders" % DST, headers=h, timeout=30).json():
-        if f.get("title") == FOLDER:
-            folder_uid = f.get("uid")
-    if not folder_uid:
+    fu = folder_uid(FOLDER, TOK, DST)
+    if not fu:
         print("folder '%s' not found" % FOLDER); return
-    items = requests.get("%s/api/search?type=dash-db&folderUIDs=%s" % (DST, folder_uid),
-                         headers=h, timeout=30).json()
+    items = search_dashboards(fu, TOK, DST)
     print("%d dashboards in '%s'" % (len(items), FOLDER))
-    for it in items:
-        full = requests.get("%s/api/dashboards/uid/%s" % (DST, it["uid"]), headers=h, timeout=30).json()
-        dash = full["dashboard"]
-        c = walk(dash.get("panels", []))
-        if c:
-            r = requests.post("%s/api/dashboards/db" % DST, headers=h, timeout=60,
-                              json={"dashboard": dash, "overwrite": True, "folderUid": folder_uid})
-            print("  %s: fixed %d query(ies) -> %s" % (dash.get("title"), c, r.status_code))
+    for_each_dashboard(fu, lambda d: walk_panels(d.get("panels", []), fix_panel),
+                       TOK, DST, "  %s: fixed %d query(ies) -> %s", items=items)
 
 
 if __name__ == "__main__":

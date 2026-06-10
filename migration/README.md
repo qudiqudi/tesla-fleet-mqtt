@@ -54,3 +54,5 @@ python migration/grafana-clean-maps.py
 
 Every Grafana script is idempotent, so re-running is safe. Run them anywhere Python can reach
 your Grafana — directly on a host, or inside a container that has the env vars and network access.
+The Grafana scripts share `_grafana.py` (API calls with error checking, folder lookup, panel
+walking), so keep it next to them.
