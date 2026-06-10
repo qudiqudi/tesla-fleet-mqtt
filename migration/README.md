@@ -38,7 +38,10 @@ GPL content is copied into this repo.
 | `ROUTE_COLOR` | `#E02F44` | clean-maps |
 | `ROUTE_WIDTH` | `2` | clean-maps |
 | `PARK_COLOR` | `#3274D9` | clean-maps |
-| `CHARGE_COLOR` | `#73BF69` | clean-maps |
+| `CHARGE_COLOR` | `#FFD400` | clean-maps |
+| `LANDMARK_HALO_COLOR` | `#FFFFFF` | clean-maps |
+| `PARK_LABEL_COLOR` | `#FFFFFF` | clean-maps |
+| `CHARGE_LABEL_COLOR` | `#111111` | clean-maps |
 | `TL_DB_*`, `DB_*`, `TESLA_VIN` | see `backfill-teslalogger.py` | backfill |
 
 Set `DST_GRAFANA` if your Grafana isn't reachable at `grafana:3000` (e.g. a custom port).
