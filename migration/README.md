@@ -35,6 +35,7 @@ GPL content is copied into this repo.
 | `DST_DS_NAME` | `teslalogger` | migrate (target datasource name) |
 | `DST_FOLDER` | `Tesla (teslalogger)` | all grafana scripts |
 | `MARKER_COLOR` | `#F2495C` | clean-maps |
+| `VISITED_MARKER_SIZE` | `3` | clean-maps |
 | `ROUTE_COLOR` | `#E02F44` | clean-maps |
 | `ROUTE_WIDTH` | `2` | clean-maps |
 | `MAP_FIT_LAYER` | `Position history` | clean-maps route maps only |
