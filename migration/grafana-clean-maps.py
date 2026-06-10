@@ -23,6 +23,9 @@ MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on
 MARKER_SIZE = 6
 ROUTE_COLOR = os.environ.get("ROUTE_COLOR", "#E02F44")
 ROUTE_WIDTH = float(os.environ.get("ROUTE_WIDTH", "2"))
+MAP_FIT_LAYER = os.environ.get("MAP_FIT_LAYER", "Position history")
+MAP_FIT_PADDING = float(os.environ.get("MAP_FIT_PADDING", "8"))
+MAP_FIT_MAX_ZOOM = float(os.environ.get("MAP_FIT_MAX_ZOOM", "14"))
 PARK_COLOR = os.environ.get("PARK_COLOR", "#3274D9")
 AC_CHARGE_COLOR = os.environ.get("AC_CHARGE_COLOR", "#FFD400")
 DC_CHARGE_COLOR = os.environ.get("DC_CHARGE_COLOR", "#E02F44")
@@ -61,7 +64,8 @@ def history_query(sql):
 
 
 def route_layer():
-    return {"type": "route",
+    return {"name": MAP_FIT_LAYER,
+            "type": "route",
             "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
             "config": {"style": dict(ROUTE_STYLE), "arrow": 0},
             "tooltip": False}
@@ -176,6 +180,16 @@ def ensure_landmark_targets(p, base, car_filter):
     return 1, park_ref, ac_ref, dc_ref
 
 
+def ensure_fit_view(p):
+    opts = p.setdefault("options", {})
+    want = {"id": "fit", "allLayers": False, "layer": MAP_FIT_LAYER,
+            "padding": MAP_FIT_PADDING, "zoom": MAP_FIT_MAX_ZOOM}
+    if opts.get("view") == want:
+        return 0
+    opts["view"] = want
+    return 1
+
+
 def clean_panel(p):
     if p.get("type") != "geomap":
         return 0
@@ -213,6 +227,7 @@ def clean_panel(p):
         layers = opts.setdefault("layers", [])
         base = next((t for t in p.get("targets", []) if history_query(t.get("rawSql") or "")), None)
         car_filter = mysql_car_filter(base.get("rawSql") or "") if base else None
+        n += ensure_fit_view(p)
         if not any(layer.get("type") == "route" for layer in layers):
             if len(layers) == 1 and layers[0].get("type") == "markers":
                 layers[0].clear()
@@ -250,6 +265,8 @@ def clean_panel(p):
             for k, v in want.items():
                 n += style_set(style, k, v)
         elif ltype == "route":
+            if layer.get("name") != MAP_FIT_LAYER:
+                layer["name"] = MAP_FIT_LAYER; n += 1
             if cfg.get("arrow") not in (0, None):
                 cfg["arrow"] = 0; n += 1
             for k, v in ROUTE_STYLE.items():

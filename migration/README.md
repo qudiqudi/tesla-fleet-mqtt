@@ -37,6 +37,9 @@ GPL content is copied into this repo.
 | `MARKER_COLOR` | `#F2495C` | clean-maps |
 | `ROUTE_COLOR` | `#E02F44` | clean-maps |
 | `ROUTE_WIDTH` | `2` | clean-maps |
+| `MAP_FIT_LAYER` | `Position history` | clean-maps |
+| `MAP_FIT_PADDING` | `8` | clean-maps |
+| `MAP_FIT_MAX_ZOOM` | `14` | clean-maps |
 | `PARK_COLOR` | `#3274D9` | clean-maps |
 | `AC_CHARGE_COLOR` | `#FFD400` | clean-maps |
 | `DC_CHARGE_COLOR` | `#E02F44` | clean-maps |
