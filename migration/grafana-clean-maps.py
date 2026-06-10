@@ -3,8 +3,9 @@
 Clean up geomap tooltips on the migrated dashboards: teslalogger builds an HTML 'address'
 column for its old map tooltip, which native geomap renders as raw markup. This wraps each
 geomap query to strip HTML tags (and aliases it to 'info'), pins the location to the lat/lng
-columns, converts dense position-history marker maps to thin route layers, and adds parked /
-charging landmark layers. Idempotent (marker comment). Run in the tools container:
+columns, converts dense position-history marker maps to thin route layers, adds parked /
+charging landmark layers, and rebuilds teslalogger's "Visited" map (track + chargers in one
+UNION) into a route line plus charger pins. Idempotent (marker comment). Run in the tools container:
   docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python migration/grafana-clean-maps.py
 """
 import os
@@ -52,6 +53,24 @@ DC_CHARGE_STYLE = {"color": {"fixed": DC_CHARGE_COLOR}, "opacity": 1,
                    "textConfig": {"fontSize": 14, "offsetY": 0}}
 LANDMARK_LAYER_NAMES = {"Parked halo", "Charging halo", "Parked", "Charging",
                         "Parked label", "Charging label", "AC charger", "DC charger"}
+# teslalogger's "Visited" map is a single UNION query returning an averaged GPS track (type=0)
+# alongside charger locations (type=1 Supercharger, type=2 other fast DC). Rendered as one marker
+# layer the track collapses into a blob of dots; teslalogger draws the track as a connected line
+# and the chargers as pins. We rebuild it that way: a route layer + charger marker layers.
+VISITED_TL = "/*tl_visited*/"
+VISITED_ROUTE_COLOR = os.environ.get("VISITED_ROUTE_COLOR", "#3387FF")  # teslalogger track blue
+VISITED_ROUTE_WIDTH = float(os.environ.get("VISITED_ROUTE_WIDTH", "2"))
+VISITED_SC_COLOR = os.environ.get("VISITED_SC_COLOR", "#E02F44")  # supercharger pins (red)
+VISITED_DC_COLOR = os.environ.get("VISITED_DC_COLOR", "#56A64B")  # other fast-charger pins (green)
+VISITED_PIN = os.environ.get("VISITED_PIN", "img/icons/marker/triangle.svg")
+VISITED_ROUTE_STYLE = {"color": {"fixed": VISITED_ROUTE_COLOR}, "opacity": 0.85,
+                       "lineWidth": VISITED_ROUTE_WIDTH, "size": {"fixed": 2, "min": 1, "max": 4}}
+VISITED_SC_STYLE = {"color": {"fixed": VISITED_SC_COLOR}, "opacity": 1, "lineWidth": 1,
+                    "size": {"fixed": 9, "min": 6, "max": 13},
+                    "symbol": {"fixed": VISITED_PIN, "mode": "fixed"}}
+VISITED_DC_STYLE = {"color": {"fixed": VISITED_DC_COLOR}, "opacity": 1, "lineWidth": 1,
+                    "size": {"fixed": 8, "min": 5, "max": 12},
+                    "symbol": {"fixed": VISITED_PIN, "mode": "fixed"}}
 
 
 def style_set(style, key, value):
@@ -75,6 +94,12 @@ def coords_query(sql):
 def visited_query(sql):
     low = " ".join((sql or "").lower().split())
     return coords_query(low) and ("group by" in low or " count(" in low or "avg(" in low)
+
+
+def tl_visited_query(sql):
+    # teslalogger's Visited UNION query: averaged track + chargers, discriminated by a `type` column.
+    low = " ".join((sql or "").lower().split())
+    return coords_query(low) and " as type" in low and " union " in low and "from pos" in low
 
 
 def route_layer():
@@ -208,6 +233,46 @@ def ensure_fit_view(p, layer=None):
     return 1
 
 
+def tl_visited_panel(p):
+    # Split the single Visited UNION into a track source (kept as-is) and two charger-only
+    # companion queries (type=1 Supercharger, type=2 other DC), then render a blue route layer
+    # over the track plus a pin marker layer per charger type. Idempotent via the VISITED_TL marker.
+    targets = p.get("targets", [])
+    base = next((t for t in targets
+                 if tl_visited_query(t.get("rawSql") or "") and VISITED_TL not in (t.get("rawSql") or "")),
+                None)
+    if not base:
+        return 0
+    base_ref = base.get("refId")
+    base_sql = base.get("rawSql") or ""
+    keep = [t for t in targets if VISITED_TL not in (t.get("rawSql") or "")]
+    used = used_refids(keep)
+    sc_ref = next_refid(used, "B")
+    dc_ref = next_refid(used, "C")
+    if not (base_ref and sc_ref and dc_ref):
+        return 0
+    sc_sql = "SELECT * FROM (\n%s\n) tlv WHERE type = 1 %s" % (base_sql, VISITED_TL)
+    dc_sql = "SELECT * FROM (\n%s\n) tlv WHERE type = 2 %s" % (base_sql, VISITED_TL)
+    wanted_targets = keep + [clone_target(base, sc_ref, sc_sql),
+                             clone_target(base, dc_ref, dc_sql)]
+    n = 0
+    if targets != wanted_targets:
+        p["targets"] = wanted_targets
+        n += 1
+    route = route_layer()
+    route["filterData"] = {"id": "byRefId", "options": base_ref}
+    route["config"]["style"] = dict(VISITED_ROUTE_STYLE)
+    wanted_layers = [route,
+                     marker_layer("Superchargers", sc_ref, VISITED_SC_STYLE),
+                     marker_layer("Fast chargers", dc_ref, VISITED_DC_STYLE)]
+    opts = p.setdefault("options", {})
+    if opts.get("layers") != wanted_layers:
+        opts["layers"] = wanted_layers
+        n += 1
+    n += ensure_fit_view(p, MAP_FIT_LAYER)
+    return n
+
+
 def clean_panel(p):
     if p.get("type") != "geomap":
         return 0
@@ -237,6 +302,12 @@ def clean_panel(p):
                              % (sql, FILT))
             tgt["format"] = "table"
             n += 1
+    # teslalogger's "Visited" map (averaged track + chargers in one UNION, discriminated by `type`)
+    # renders as a single marker layer -> the track becomes a blob of dots. Rebuild it the
+    # teslalogger way: a blue route line for the track plus charger pins. Handle it before the
+    # generic branches below, which would otherwise re-style it as a flat marker map.
+    if any(tl_visited_query(t.get("rawSql") or "") for t in p.get("targets", [])):
+        return n + tl_visited_panel(p)
     # Dashboards that were already modernized before this script learned about route layers are
     # native geomaps with a single fat marker layer. If the query is a raw ordered pos history,
     # switch that layer to a route so re-running cleanup visibly fixes existing dashboards.
