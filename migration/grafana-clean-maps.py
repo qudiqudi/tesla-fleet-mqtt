@@ -24,18 +24,32 @@ MARKER_SIZE = 6
 ROUTE_COLOR = os.environ.get("ROUTE_COLOR", "#E02F44")
 ROUTE_WIDTH = float(os.environ.get("ROUTE_WIDTH", "2"))
 PARK_COLOR = os.environ.get("PARK_COLOR", "#3274D9")
-CHARGE_COLOR = os.environ.get("CHARGE_COLOR", "#73BF69")
+CHARGE_COLOR = os.environ.get("CHARGE_COLOR", "#FFD400")
+HALO_COLOR = os.environ.get("LANDMARK_HALO_COLOR", "#FFFFFF")
+PARK_LABEL_COLOR = os.environ.get("PARK_LABEL_COLOR", "#FFFFFF")
+CHARGE_LABEL_COLOR = os.environ.get("CHARGE_LABEL_COLOR", "#111111")
 ROUTE_STYLE = {"color": {"fixed": ROUTE_COLOR}, "opacity": 0.75, "lineWidth": ROUTE_WIDTH,
                "size": {"fixed": ROUTE_WIDTH, "min": 1, "max": 4}}
 MARKER_STYLE = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
-PARK_STYLE = {"color": {"fixed": PARK_COLOR}, "opacity": 0.95,
-              "size": {"fixed": 7, "min": 4, "max": 12},
-              "text": {"fixed": "P", "mode": "fixed"},
-              "textConfig": {"fontSize": 11, "offsetY": -14}}
-CHARGE_STYLE = {"color": {"fixed": CHARGE_COLOR}, "opacity": 0.95,
-                "size": {"fixed": 8, "min": 5, "max": 14},
-                "text": {"field": "kind", "mode": "field"},
-                "textConfig": {"fontSize": 10, "offsetY": -15}}
+HALO_STYLE = {"color": {"fixed": HALO_COLOR}, "opacity": 0.9,
+              "size": {"fixed": 20, "min": 14, "max": 26},
+              "symbol": {"fixed": "img/icons/marker/circle.svg", "mode": "fixed"}}
+PARK_STYLE = {"color": {"fixed": PARK_COLOR}, "opacity": 1,
+              "size": {"fixed": 14, "min": 10, "max": 18},
+              "lineWidth": 2,
+              "symbol": {"fixed": "img/icons/marker/square.svg", "mode": "fixed"}}
+CHARGE_STYLE = {"color": {"fixed": CHARGE_COLOR}, "opacity": 1,
+                "size": {"fixed": 16, "min": 11, "max": 20},
+                "lineWidth": 2,
+                "symbol": {"fixed": "img/icons/marker/star.svg", "mode": "fixed"}}
+PARK_LABEL_STYLE = {"color": {"fixed": PARK_LABEL_COLOR}, "opacity": 1,
+                    "text": {"fixed": "P", "mode": "fixed"},
+                    "textConfig": {"fontSize": 12, "offsetY": 0}}
+CHARGE_LABEL_STYLE = {"color": {"fixed": CHARGE_LABEL_COLOR}, "opacity": 1,
+                      "text": {"field": "kind", "mode": "field"},
+                      "textConfig": {"fontSize": 10, "offsetY": 0}}
+LANDMARK_LAYER_NAMES = {"Parked halo", "Charging halo", "Parked", "Charging",
+                        "Parked label", "Charging label"}
 
 
 def style_set(style, key, value):
@@ -65,6 +79,35 @@ def marker_layer(name, ref_id, style):
             "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
             "config": {"showLegend": False, "style": deepcopy(style)},
             "tooltip": True}
+
+
+def landmark_layers(park_ref, charge_ref):
+    return [
+        marker_layer("Parked halo", park_ref, HALO_STYLE),
+        marker_layer("Charging halo", charge_ref, HALO_STYLE),
+        marker_layer("Parked", park_ref, PARK_STYLE),
+        marker_layer("Charging", charge_ref, CHARGE_STYLE),
+        marker_layer("Parked label", park_ref, PARK_LABEL_STYLE),
+        marker_layer("Charging label", charge_ref, CHARGE_LABEL_STYLE),
+    ]
+
+
+def landmark_ref(p, needle):
+    needle = needle.lower()
+    for tgt in p.get("targets", []):
+        sql = (tgt.get("rawSql") or "").lower()
+        if LAND in sql and needle in sql and tgt.get("refId"):
+            return tgt.get("refId")
+    return None
+
+
+def ensure_landmark_layers(layers, park_ref, charge_ref):
+    keep = [layer for layer in layers if layer.get("name") not in LANDMARK_LAYER_NAMES]
+    wanted = keep + landmark_layers(park_ref, charge_ref)
+    if layers == wanted:
+        return 0
+    layers[:] = wanted
+    return 1
 
 
 def target_refids(p):
@@ -169,9 +212,11 @@ def clean_panel(p):
                 charge_ref = next_refid(used, "C")
                 if park_ref and charge_ref:
                     p.setdefault("targets", []).extend(landmark_targets(base, car_filter, park_ref, charge_ref))
-                    layers.append(marker_layer("Parked", park_ref, PARK_STYLE))
-                    layers.append(marker_layer("Charging", charge_ref, CHARGE_STYLE))
                     n += 1
+        park_ref = landmark_ref(p, "from drivestate")
+        charge_ref = landmark_ref(p, "from chargingstate")
+        if park_ref and charge_ref:
+            n += ensure_landmark_layers(layers, park_ref, charge_ref)
     # Per-layer touch-ups (idempotent):
     #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
     #  - set a high-contrast marker color/size under config.style (the proper nesting)
@@ -188,7 +233,10 @@ def clean_panel(p):
                 cfg["showLegend"] = False; n += 1
             if "size" in cfg:  # loose key superseded by style.size
                 cfg.pop("size"); n += 1
-            want = {"Parked": PARK_STYLE, "Charging": CHARGE_STYLE}.get(layer.get("name"), MARKER_STYLE)
+            want = {"Parked halo": HALO_STYLE, "Charging halo": HALO_STYLE,
+                    "Parked": PARK_STYLE, "Charging": CHARGE_STYLE,
+                    "Parked label": PARK_LABEL_STYLE,
+                    "Charging label": CHARGE_LABEL_STYLE}.get(layer.get("name"), MARKER_STYLE)
             for k, v in want.items():
                 n += style_set(style, k, v)
         elif ltype == "route":
