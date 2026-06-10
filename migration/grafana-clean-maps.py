@@ -63,6 +63,11 @@ def history_query(sql):
             and ("order by id" in low or "order by datum" in low or "order by 1" in low))
 
 
+def coords_query(sql):
+    low = (sql or "").lower()
+    return "lat" in low and "lng" in low
+
+
 def route_layer():
     return {"name": MAP_FIT_LAYER,
             "type": "route",
@@ -180,10 +185,14 @@ def ensure_landmark_targets(p, base, car_filter):
     return 1, park_ref, ac_ref, dc_ref
 
 
-def ensure_fit_view(p):
+def ensure_fit_view(p, layer=None):
     opts = p.setdefault("options", {})
-    want = {"id": "fit", "allLayers": False, "layer": MAP_FIT_LAYER,
-            "padding": MAP_FIT_PADDING, "zoom": MAP_FIT_MAX_ZOOM}
+    if layer:
+        want = {"id": "fit", "allLayers": False, "layer": layer,
+                "padding": MAP_FIT_PADDING, "zoom": MAP_FIT_MAX_ZOOM}
+    else:
+        want = {"id": "fit", "allLayers": True,
+                "padding": MAP_FIT_PADDING, "zoom": MAP_FIT_MAX_ZOOM}
     if opts.get("view") == want:
         return 0
     opts["view"] = want
@@ -227,7 +236,7 @@ def clean_panel(p):
         layers = opts.setdefault("layers", [])
         base = next((t for t in p.get("targets", []) if history_query(t.get("rawSql") or "")), None)
         car_filter = mysql_car_filter(base.get("rawSql") or "") if base else None
-        n += ensure_fit_view(p)
+        n += ensure_fit_view(p, MAP_FIT_LAYER)
         if not any(layer.get("type") == "route" for layer in layers):
             if len(layers) == 1 and layers[0].get("type") == "markers":
                 layers[0].clear()
@@ -243,6 +252,8 @@ def clean_panel(p):
             park_ref = ac_ref = dc_ref = None
         if park_ref and ac_ref and dc_ref:
             n += ensure_landmark_layers(layers, park_ref, ac_ref, dc_ref)
+    elif any(coords_query(t.get("rawSql") or "") for t in p.get("targets", [])):
+        n += ensure_fit_view(p)
     # Per-layer touch-ups (idempotent):
     #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
     #  - set a high-contrast marker color/size under config.style (the proper nesting)
