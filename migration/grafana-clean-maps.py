@@ -85,15 +85,6 @@ def landmark_layers(park_ref, ac_ref, dc_ref):
     ]
 
 
-def landmark_ref(p, needle):
-    needle = needle.lower()
-    for tgt in p.get("targets", []):
-        sql = (tgt.get("rawSql") or "").lower()
-        if LAND in sql and needle in sql and tgt.get("refId"):
-            return tgt.get("refId")
-    return None
-
-
 def ensure_landmark_layers(layers, park_ref, ac_ref, dc_ref):
     keep = [layer for layer in layers if layer.get("name") not in LANDMARK_LAYER_NAMES]
     landmarks = landmark_layers(park_ref, ac_ref, dc_ref)
@@ -106,8 +97,8 @@ def ensure_landmark_layers(layers, park_ref, ac_ref, dc_ref):
     return 1
 
 
-def target_refids(p):
-    return {t.get("refId") for t in p.get("targets", []) if t.get("refId")}
+def used_refids(targets):
+    return {t.get("refId") for t in targets if t.get("refId")}
 
 
 def next_refid(used, preferred):
@@ -167,6 +158,24 @@ def landmark_targets(base, car_filter, park_ref, ac_ref, dc_ref):
             clone_target(base, dc_ref, dc_sql)]
 
 
+def ensure_landmark_targets(p, base, car_filter):
+    # Rebuild landmark targets instead of appending. This repairs older dashboards that went
+    # through multiple cleanup iterations and may now have duplicated landmark refIds.
+    targets = p.setdefault("targets", [])
+    keep = [t for t in targets if LAND not in (t.get("rawSql") or "")]
+    used = used_refids(keep)
+    park_ref = next_refid(used, "B")
+    ac_ref = next_refid(used, "C")
+    dc_ref = next_refid(used, "D")
+    if not (park_ref and ac_ref and dc_ref):
+        return 0, None, None, None
+    wanted = keep + landmark_targets(base, car_filter, park_ref, ac_ref, dc_ref)
+    if targets == wanted:
+        return 0, park_ref, ac_ref, dc_ref
+    p["targets"] = wanted
+    return 1, park_ref, ac_ref, dc_ref
+
+
 def clean_panel(p):
     if p.get("type") != "geomap":
         return 0
@@ -202,6 +211,8 @@ def clean_panel(p):
     if any(history_query(t.get("rawSql") or "") for t in p.get("targets", [])):
         opts = p.setdefault("options", {})
         layers = opts.setdefault("layers", [])
+        base = next((t for t in p.get("targets", []) if history_query(t.get("rawSql") or "")), None)
+        car_filter = mysql_car_filter(base.get("rawSql") or "") if base else None
         if not any(layer.get("type") == "route" for layer in layers):
             if len(layers) == 1 and layers[0].get("type") == "markers":
                 layers[0].clear()
@@ -210,38 +221,11 @@ def clean_panel(p):
             elif not layers:
                 layers.append(route_layer())
                 n += 1
-        if not any(LAND in (t.get("rawSql") or "") for t in p.get("targets", [])):
-            base = next((t for t in p.get("targets", []) if history_query(t.get("rawSql") or "")), None)
-            car_filter = mysql_car_filter(base.get("rawSql") or "") if base else None
-            if base and car_filter:
-                used = target_refids(p)
-                park_ref = next_refid(used, "B")
-                ac_ref = next_refid(used, "C")
-                dc_ref = next_refid(used, "D")
-                if park_ref and ac_ref and dc_ref:
-                    p.setdefault("targets", []).extend(landmark_targets(base, car_filter, park_ref,
-                                                                         ac_ref, dc_ref))
-                    n += 1
-        park_ref = landmark_ref(p, "from drivestate")
-        ac_ref = next((t.get("refId") for t in p.get("targets", [])
-                       if LAND in (t.get("rawSql") or "")
-                       and "from chargingstate" in (t.get("rawSql") or "").lower()
-                       and "coalesce(cs.fast_charger_type,'')=''" in (t.get("rawSql") or "").lower()), None)
-        dc_ref = next((t.get("refId") for t in p.get("targets", [])
-                       if LAND in (t.get("rawSql") or "")
-                       and "from chargingstate" in (t.get("rawSql") or "").lower()
-                       and "coalesce(cs.fast_charger_type,'')<>''" in (t.get("rawSql") or "").lower()), None)
-        if park_ref and not (ac_ref and dc_ref):
-            base = next((t for t in p.get("targets", []) if history_query(t.get("rawSql") or "")), None)
-            car_filter = mysql_car_filter(base.get("rawSql") or "") if base else None
-            if base and car_filter:
-                used = target_refids(p)
-                ac_ref = ac_ref or next_refid(used, "C")
-                dc_ref = dc_ref or next_refid(used, "D")
-                if ac_ref and dc_ref:
-                    _, ac_tgt, dc_tgt = landmark_targets(base, car_filter, park_ref, ac_ref, dc_ref)
-                    p.setdefault("targets", []).extend([ac_tgt, dc_tgt])
-                    n += 1
+        if base and car_filter:
+            changed, park_ref, ac_ref, dc_ref = ensure_landmark_targets(p, base, car_filter)
+            n += changed
+        else:
+            park_ref = ac_ref = dc_ref = None
         if park_ref and ac_ref and dc_ref:
             n += ensure_landmark_layers(layers, park_ref, ac_ref, dc_ref)
     # Per-layer touch-ups (idempotent):
