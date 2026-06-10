@@ -17,6 +17,15 @@ MARK = "/*html_stripped*/"
 FILT = "/*coords_filtered*/"
 MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on the OSM basemap
 MARKER_SIZE = 6
+ROUTE_COLOR = os.environ.get("ROUTE_COLOR", "#E02F44")
+ROUTE_WIDTH = float(os.environ.get("ROUTE_WIDTH", "2"))
+
+
+def style_set(style, key, value):
+    if style.get(key) == value:
+        return 0
+    style[key] = value
+    return 1
 
 
 def clean_panel(p):
@@ -51,22 +60,31 @@ def clean_panel(p):
     # Per-layer touch-ups (idempotent):
     #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
     #  - set a high-contrast marker color/size under config.style (the proper nesting)
+    #  - keep route/track history thin; Grafana's defaults are much heavier than TeslaLogger's map
     opts = p.setdefault("options", {})
     if "legend" in opts:
         opts.pop("legend"); n += 1
     for layer in opts.get("layers", []):
-        if layer.get("type") != "markers":
-            continue
+        ltype = layer.get("type")
         cfg = layer.setdefault("config", {})
-        if cfg.get("showLegend") is not False:
-            cfg["showLegend"] = False; n += 1
-        if "size" in cfg:  # loose key superseded by style.size
-            cfg.pop("size"); n += 1
         style = cfg.setdefault("style", {})
-        want = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
-        for k, v in want.items():
-            if style.get(k) != v:
-                style[k] = v; n += 1
+        if ltype == "markers":
+            if cfg.get("showLegend") is not False:
+                cfg["showLegend"] = False; n += 1
+            if "size" in cfg:  # loose key superseded by style.size
+                cfg.pop("size"); n += 1
+            want = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
+            for k, v in want.items():
+                n += style_set(style, k, v)
+        elif ltype == "route":
+            if cfg.get("arrow") not in (0, None):
+                cfg["arrow"] = 0; n += 1
+            n += style_set(style, "color", {"fixed": ROUTE_COLOR})
+            n += style_set(style, "opacity", 0.75)
+            n += style_set(style, "lineWidth", ROUTE_WIDTH)
+            n += style_set(style, "size", {"fixed": ROUTE_WIDTH, "min": 1, "max": 4})
+            if layer.get("tooltip") is not False:
+                layer["tooltip"] = False; n += 1
     return n
 
 
