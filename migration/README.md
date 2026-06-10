@@ -16,7 +16,7 @@ GPL content is copied into this repo.
 | `grafana-migrate.py` | Copies every dashboard from your teslalogger Grafana into your target Grafana, repointing each panel at your target datasource. UIDs get a `tl-` prefix to avoid collisions. |
 | `grafana-modernize.py` | Converts the dead Angular panel types (graph, natel-discrete, worldmap/trackmap, piechart plugin) to native React panels **and translates their display config** (axis units, legends, series overrides, value mappings) so labels/colors survive. Idempotent. |
 | `grafana-fix-links.py` | Because migrate prefixes UIDs with `tl-`, cross-dashboard drilldown links still point at the old UIDs. Rewrites `d/<old>` → `d/tl-<old>` for in-folder targets. Idempotent. |
-| `grafana-clean-maps.py` | teslalogger builds an HTML address tooltip the native geomap can't render; this strips the markup, hides the per-layer legend, sets a high-contrast marker style, and keeps route history thin. Idempotent. |
+| `grafana-clean-maps.py` | teslalogger builds an HTML address tooltip the native geomap can't render; this strips the markup, hides the per-layer legend, sets a high-contrast marker style, and converts ordered position-history maps to thin route layers. Idempotent. |
 
 ## Requirements
 

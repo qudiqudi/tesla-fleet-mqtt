@@ -2,8 +2,9 @@
 """
 Clean up geomap tooltips on the migrated dashboards: teslalogger builds an HTML 'address'
 column for its old map tooltip, which native geomap renders as raw markup. This wraps each
-geomap query to strip HTML tags (and aliases it to 'info'), and pins the marker location to
-the lat/lng columns. Idempotent (marker comment). Run in the tools container:
+geomap query to strip HTML tags (and aliases it to 'info'), pins the location to the lat/lng
+columns, and converts dense position-history marker maps to thin route layers. Idempotent
+(marker comment). Run in the tools container:
   docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python migration/grafana-clean-maps.py
 """
 import os
@@ -19,6 +20,9 @@ MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on
 MARKER_SIZE = 6
 ROUTE_COLOR = os.environ.get("ROUTE_COLOR", "#E02F44")
 ROUTE_WIDTH = float(os.environ.get("ROUTE_WIDTH", "2"))
+ROUTE_STYLE = {"color": {"fixed": ROUTE_COLOR}, "opacity": 0.75, "lineWidth": ROUTE_WIDTH,
+               "size": {"fixed": ROUTE_WIDTH, "min": 1, "max": 4}}
+MARKER_STYLE = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
 
 
 def style_set(style, key, value):
@@ -26,6 +30,19 @@ def style_set(style, key, value):
         return 0
     style[key] = value
     return 1
+
+
+def history_query(sql):
+    low = " ".join((sql or "").lower().split())
+    return (" from pos" in low and "group by" not in low
+            and ("order by id" in low or "order by datum" in low or "order by 1" in low))
+
+
+def route_layer():
+    return {"type": "route",
+            "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
+            "config": {"style": dict(ROUTE_STYLE), "arrow": 0},
+            "tooltip": False}
 
 
 def clean_panel(p):
@@ -57,6 +74,20 @@ def clean_panel(p):
                              % (sql, FILT))
             tgt["format"] = "table"
             n += 1
+    # Dashboards that were already modernized before this script learned about route layers are
+    # native geomaps with a single fat marker layer. If the query is a raw ordered pos history,
+    # switch that layer to a route so re-running cleanup visibly fixes existing dashboards.
+    if any(history_query(t.get("rawSql") or "") for t in p.get("targets", [])):
+        opts = p.setdefault("options", {})
+        layers = opts.setdefault("layers", [])
+        if not any(layer.get("type") == "route" for layer in layers):
+            if len(layers) == 1 and layers[0].get("type") == "markers":
+                layers[0].clear()
+                layers[0].update(route_layer())
+                n += 1
+            elif not layers:
+                layers.append(route_layer())
+                n += 1
     # Per-layer touch-ups (idempotent):
     #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
     #  - set a high-contrast marker color/size under config.style (the proper nesting)
@@ -73,16 +104,13 @@ def clean_panel(p):
                 cfg["showLegend"] = False; n += 1
             if "size" in cfg:  # loose key superseded by style.size
                 cfg.pop("size"); n += 1
-            want = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
-            for k, v in want.items():
+            for k, v in MARKER_STYLE.items():
                 n += style_set(style, k, v)
         elif ltype == "route":
             if cfg.get("arrow") not in (0, None):
                 cfg["arrow"] = 0; n += 1
-            n += style_set(style, "color", {"fixed": ROUTE_COLOR})
-            n += style_set(style, "opacity", 0.75)
-            n += style_set(style, "lineWidth", ROUTE_WIDTH)
-            n += style_set(style, "size", {"fixed": ROUTE_WIDTH, "min": 1, "max": 4})
+            for k, v in ROUTE_STYLE.items():
+                n += style_set(style, k, v)
             if layer.get("tooltip") is not False:
                 layer["tooltip"] = False; n += 1
     return n
