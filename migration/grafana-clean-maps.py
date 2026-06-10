@@ -21,6 +21,7 @@ FILT = "/*coords_filtered*/"
 LAND = "/*landmarks_added*/"
 MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on the OSM basemap
 MARKER_SIZE = 6
+VISITED_MARKER_SIZE = float(os.environ.get("VISITED_MARKER_SIZE", "3"))
 ROUTE_COLOR = os.environ.get("ROUTE_COLOR", "#E02F44")
 ROUTE_WIDTH = float(os.environ.get("ROUTE_WIDTH", "2"))
 MAP_FIT_LAYER = os.environ.get("MAP_FIT_LAYER", "Position history")
@@ -33,6 +34,9 @@ PARK_LABEL_COLOR = os.environ.get("PARK_LABEL_COLOR", "#FFFFFF")
 ROUTE_STYLE = {"color": {"fixed": ROUTE_COLOR}, "opacity": 0.75, "lineWidth": ROUTE_WIDTH,
                "size": {"fixed": ROUTE_WIDTH, "min": 1, "max": 4}}
 MARKER_STYLE = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
+VISITED_MARKER_STYLE = {"color": {"fixed": MARKER_COLOR},
+                        "size": {"fixed": VISITED_MARKER_SIZE, "min": 2, "max": 6},
+                        "opacity": 0.75}
 PARK_STYLE = {"color": {"fixed": PARK_COLOR}, "opacity": 1,
               "size": {"fixed": 7, "min": 5, "max": 10},
               "lineWidth": 2,
@@ -66,6 +70,11 @@ def history_query(sql):
 def coords_query(sql):
     low = (sql or "").lower()
     return "lat" in low and "lng" in low
+
+
+def visited_query(sql):
+    low = " ".join((sql or "").lower().split())
+    return coords_query(low) and ("group by" in low or " count(" in low or "avg(" in low)
 
 
 def route_layer():
@@ -270,9 +279,13 @@ def clean_panel(p):
                 cfg["showLegend"] = False; n += 1
             if "size" in cfg:  # loose key superseded by style.size
                 cfg.pop("size"); n += 1
+            if any(visited_query(t.get("rawSql") or "") for t in p.get("targets", [])):
+                default_marker_style = VISITED_MARKER_STYLE
+            else:
+                default_marker_style = MARKER_STYLE
             want = {"Parked": PARK_STYLE, "Parked label": PARK_LABEL_STYLE,
                     "AC charger": AC_CHARGE_STYLE,
-                    "DC charger": DC_CHARGE_STYLE}.get(layer.get("name"), MARKER_STYLE)
+                    "DC charger": DC_CHARGE_STYLE}.get(layer.get("name"), default_marker_style)
             for k, v in want.items():
                 n += style_set(style, k, v)
         elif ltype == "route":
