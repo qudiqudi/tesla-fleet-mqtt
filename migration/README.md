@@ -45,11 +45,16 @@ GPL content is copied into this repo.
 | `AC_CHARGE_COLOR` | `#FFD400` | clean-maps |
 | `DC_CHARGE_COLOR` | `#E02F44` | clean-maps |
 | `PARK_LABEL_COLOR` | `#FFFFFF` | clean-maps |
-| `VISITED_ROUTE_COLOR` | `#3387FF` | clean-maps Visited track line |
-| `VISITED_ROUTE_WIDTH` | `2` | clean-maps Visited track line |
-| `VISITED_SC_COLOR` | `#E02F44` | clean-maps Supercharger pins |
-| `VISITED_DC_COLOR` | `#56A64B` | clean-maps other fast-charger pins |
-| `VISITED_PIN` | `img/icons/marker/triangle.svg` | clean-maps charger pin icon |
+| `VISITED_ROUTE_COLOR` | `#2D7BFF` | clean-maps Visited track line |
+| `VISITED_ROUTE_WIDTH` | `3` | clean-maps Visited track line |
+| `VISITED_SC_COLOR` | `#E02F44` | clean-maps Supercharger disc (red) |
+| `VISITED_DC_COLOR` | `#56A64B` | clean-maps other fast-charger disc (green) |
+| `VISITED_HALO_COLOR` | `#FFFFFF` | clean-maps charger pin border |
+| `VISITED_GLYPH_COLOR` | `#FFFFFF` | clean-maps charger glyph |
+| `VISITED_SC_GLYPH` | `T` | clean-maps Supercharger glyph |
+| `VISITED_DC_GLYPH` | `⚡` | clean-maps other fast-charger glyph |
+| `VISITED_DOT_SIZE` | `8` | clean-maps charger disc radius |
+| `VISITED_HALO_WIDTH` | `3` | clean-maps pin border width |
 | `TL_DB_*`, `DB_*`, `TESLA_VIN` | see `backfill-teslalogger.py` | backfill |
 
 Set `DST_GRAFANA` if your Grafana isn't reachable at `grafana:3000` (e.g. a custom port).

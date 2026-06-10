@@ -56,21 +56,47 @@ LANDMARK_LAYER_NAMES = {"Parked halo", "Charging halo", "Parked", "Charging",
 # teslalogger's "Visited" map is a single UNION query returning an averaged GPS track (type=0)
 # alongside charger locations (type=1 Supercharger, type=2 other fast DC). Rendered as one marker
 # layer the track collapses into a blob of dots; teslalogger draws the track as a connected line
-# and the chargers as pins. We rebuild it that way: a route layer + charger marker layers.
+# and the chargers as labelled pins. We rebuild it that way.
+#
+# Grafana 13's geomap recolours any .svg marker to a single tint and a marker's text label inherits
+# the marker colour, so a "coloured pin + white glyph" needs to be composed from stacked layers.
+# Built-in marker SVGs are thin outline shapes (cheap-looking when tinted) except `circle`, which is
+# special-cased to a crisp vector disc. So each charger is three stacked layers: a white halo disc
+# (the pin's border), a coloured disc on top, and a white glyph (T for Superchargers, a bolt for
+# other fast DC) -- a clean, high-contrast marker that holds up on the busy OSM basemap.
 VISITED_TL = "/*tl_visited*/"
-VISITED_ROUTE_COLOR = os.environ.get("VISITED_ROUTE_COLOR", "#3387FF")  # teslalogger track blue
-VISITED_ROUTE_WIDTH = float(os.environ.get("VISITED_ROUTE_WIDTH", "2"))
-VISITED_SC_COLOR = os.environ.get("VISITED_SC_COLOR", "#E02F44")  # supercharger pins (red)
-VISITED_DC_COLOR = os.environ.get("VISITED_DC_COLOR", "#56A64B")  # other fast-charger pins (green)
-VISITED_PIN = os.environ.get("VISITED_PIN", "img/icons/marker/triangle.svg")
-VISITED_ROUTE_STYLE = {"color": {"fixed": VISITED_ROUTE_COLOR}, "opacity": 0.85,
+VISITED_ROUTE_COLOR = os.environ.get("VISITED_ROUTE_COLOR", "#2D7BFF")  # teslalogger-style track blue
+VISITED_ROUTE_WIDTH = float(os.environ.get("VISITED_ROUTE_WIDTH", "3"))
+VISITED_SC_COLOR = os.environ.get("VISITED_SC_COLOR", "#E02F44")  # supercharger disc (red)
+VISITED_DC_COLOR = os.environ.get("VISITED_DC_COLOR", "#56A64B")  # other fast-charger disc (green)
+VISITED_HALO_COLOR = os.environ.get("VISITED_HALO_COLOR", "#FFFFFF")  # pin border
+VISITED_GLYPH_COLOR = os.environ.get("VISITED_GLYPH_COLOR", "#FFFFFF")
+VISITED_SC_GLYPH = os.environ.get("VISITED_SC_GLYPH", "T")  # Tesla Supercharger
+VISITED_DC_GLYPH = os.environ.get("VISITED_DC_GLYPH", "⚡")  # other fast charger
+VISITED_DOT_SIZE = float(os.environ.get("VISITED_DOT_SIZE", "8"))
+VISITED_HALO_SIZE = VISITED_DOT_SIZE + float(os.environ.get("VISITED_HALO_WIDTH", "3"))
+VISITED_DISC = {"fixed": "img/icons/marker/circle.svg", "mode": "fixed"}  # crisp vector circle
+VISITED_ROUTE_STYLE = {"color": {"fixed": VISITED_ROUTE_COLOR}, "opacity": 0.9,
                        "lineWidth": VISITED_ROUTE_WIDTH, "size": {"fixed": 2, "min": 1, "max": 4}}
-VISITED_SC_STYLE = {"color": {"fixed": VISITED_SC_COLOR}, "opacity": 1, "lineWidth": 1,
-                    "size": {"fixed": 9, "min": 6, "max": 13},
-                    "symbol": {"fixed": VISITED_PIN, "mode": "fixed"}}
-VISITED_DC_STYLE = {"color": {"fixed": VISITED_DC_COLOR}, "opacity": 1, "lineWidth": 1,
-                    "size": {"fixed": 8, "min": 5, "max": 12},
-                    "symbol": {"fixed": VISITED_PIN, "mode": "fixed"}}
+VISITED_HALO_STYLE = {"color": {"fixed": VISITED_HALO_COLOR}, "opacity": 1, "lineWidth": 1,
+                      "size": {"fixed": VISITED_HALO_SIZE}, "symbol": dict(VISITED_DISC)}
+
+
+def _visited_disc(color):
+    return {"color": {"fixed": color}, "opacity": 1, "lineWidth": 1,
+            "size": {"fixed": VISITED_DOT_SIZE}, "symbol": dict(VISITED_DISC)}
+
+
+def _visited_glyph(text, font_size):
+    return {"color": {"fixed": VISITED_GLYPH_COLOR}, "opacity": 1,
+            "text": {"fixed": text, "mode": "fixed"},
+            "textConfig": {"fontSize": font_size, "offsetY": 0}}
+
+
+VISITED_SC_DISC_STYLE = _visited_disc(VISITED_SC_COLOR)
+VISITED_DC_DISC_STYLE = _visited_disc(VISITED_DC_COLOR)
+VISITED_SC_GLYPH_STYLE = _visited_glyph(VISITED_SC_GLYPH, 11)
+VISITED_DC_GLYPH_STYLE = _visited_glyph(VISITED_DC_GLYPH, 13)
 
 
 def style_set(style, key, value):
@@ -233,10 +259,21 @@ def ensure_fit_view(p, layer=None):
     return 1
 
 
+def charger_layers(label, ref_id, disc_style, glyph_style):
+    # A teslalogger-style pin, stacked bottom-to-top: white halo (border), coloured disc, white
+    # glyph. Only the disc carries the tooltip so a click shows one charging popup, not three.
+    halo = marker_layer(label + " halo", ref_id, VISITED_HALO_STYLE)
+    halo["tooltip"] = False
+    disc = marker_layer(label + "s", ref_id, disc_style)
+    glyph = marker_layer(label + " label", ref_id, glyph_style)
+    glyph["tooltip"] = False
+    return [halo, disc, glyph]
+
+
 def tl_visited_panel(p):
     # Split the single Visited UNION into a track source (kept as-is) and two charger-only
     # companion queries (type=1 Supercharger, type=2 other DC), then render a blue route layer
-    # over the track plus a pin marker layer per charger type. Idempotent via the VISITED_TL marker.
+    # over the track plus stacked pin layers per charger type. Idempotent via the VISITED_TL marker.
     targets = p.get("targets", [])
     base = next((t for t in targets
                  if tl_visited_query(t.get("rawSql") or "") and VISITED_TL not in (t.get("rawSql") or "")),
@@ -262,9 +299,9 @@ def tl_visited_panel(p):
     route = route_layer()
     route["filterData"] = {"id": "byRefId", "options": base_ref}
     route["config"]["style"] = dict(VISITED_ROUTE_STYLE)
-    wanted_layers = [route,
-                     marker_layer("Superchargers", sc_ref, VISITED_SC_STYLE),
-                     marker_layer("Fast chargers", dc_ref, VISITED_DC_STYLE)]
+    wanted_layers = [route]
+    wanted_layers += charger_layers("Supercharger", sc_ref, VISITED_SC_DISC_STYLE, VISITED_SC_GLYPH_STYLE)
+    wanted_layers += charger_layers("Fast charger", dc_ref, VISITED_DC_DISC_STYLE, VISITED_DC_GLYPH_STYLE)
     opts = p.setdefault("options", {})
     if opts.get("layers") != wanted_layers:
         opts["layers"] = wanted_layers
