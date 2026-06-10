@@ -21,8 +21,15 @@ re-runs the beta->GA migration whenever pluginVersion is missing or older (API-p
 dashboards never get one stamped), which mangles already-GA options into invalid
 matchers and renders "Err".
 
-Idempotent: panels already in the GA shape with a pluginVersion are left untouched.
-Run in the tools container (this stack's Grafana listens on :3003):
+Finally, a field mapped to a series' color needs a by-value color scheme (continuous /
+thresholds / value-mappings). teslalogger colors charging curves by chargingstate id and
+relies on Grafana 10's beta renderer; the GA renderer's fieldValueColors() builds an empty
+palette for the default palette-classic mode, so point drawing throws alpha(undefined) and
+the chart renders with axes but no points. We add a continuous color override per color
+field that lacks one.
+
+Idempotent: panels already in the GA shape with a pluginVersion and color override are left
+untouched. Run in the tools container (this stack's Grafana listens on :3003):
   docker exec -e DST_GRAFANA_TOKEN=... -e DST_GRAFANA=http://grafana:3003 \
     tesla-tools python migration/grafana-fix-xychart.py
 """
@@ -33,11 +40,42 @@ from _grafana import api, folder_uid, for_each_dashboard, search_dashboards, wal
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
+COLOR_MODE = os.environ.get("XY_COLOR_MODE", "continuous-GrYlRd")  # by-value scheme for color fields
 GRAFANA_VERSION = None  # resolved in main(); fix_panel falls back to 11.1.0
 
 
 def by_name(field):
     return {"matcher": {"id": "byName", "options": field}}
+
+
+def color_field_name(s):
+    # the field name a GA series colors by, or None
+    m = (s.get("color") or {}).get("matcher") or {}
+    return m.get("options") if m.get("id") == "byName" else None
+
+
+def ensure_color_modes(p):
+    # every field used as a series color needs a by-value color scheme, or the GA renderer
+    # builds an empty palette and crashes drawing points (alpha(undefined)).
+    fields = {color_field_name(s) for s in p.get("options", {}).get("series", [])} - {None}
+    if not fields:
+        return 0
+    fc = p.setdefault("fieldConfig", {"defaults": {}, "overrides": []})
+    overrides = fc.setdefault("overrides", [])
+    changed = 0
+    for f in fields:
+        ov = next((o for o in overrides
+                   if o.get("matcher", {}).get("id") == "byName"
+                   and o["matcher"].get("options") == f), None)
+        if ov is None:
+            ov = {"matcher": {"id": "byName", "options": f}, "properties": []}
+            overrides.append(ov)
+        props = ov.setdefault("properties", [])
+        if any(pr.get("id") == "color" for pr in props):
+            continue   # a color mode is already set, leave it
+        props.append({"id": "color", "value": {"mode": COLOR_MODE}})
+        changed = 1
+    return changed
 
 
 def fix_panel(p):
@@ -65,7 +103,7 @@ def fix_panel(p):
                 if "frame" not in s:
                     s["frame"] = {"matcher": {"id": "byIndex", "options": 0}}
                     changed = 1
-        return changed
+        return changed | ensure_color_modes(p)
     new_series = []
     for s in series:
         # frame matcher is mandatory in manual mapping (beta stored a plain index or nothing)
@@ -92,6 +130,7 @@ def fix_panel(p):
     o["series"] = new_series
     o.pop("dims", None)
     p["options"] = o
+    ensure_color_modes(p)
     return 1
 
 
