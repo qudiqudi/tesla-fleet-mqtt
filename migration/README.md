@@ -16,7 +16,7 @@ GPL content is copied into this repo.
 | `grafana-migrate.py` | Copies every dashboard from your teslalogger Grafana into your target Grafana, repointing each panel at your target datasource. UIDs get a `tl-` prefix to avoid collisions. |
 | `grafana-modernize.py` | Converts the dead Angular panel types (graph, natel-discrete, worldmap/trackmap, piechart plugin) to native React panels **and translates their display config** (axis units, legends, series overrides, value mappings) so labels/colors survive. Idempotent. |
 | `grafana-fix-links.py` | Because migrate prefixes UIDs with `tl-`, cross-dashboard drilldown links still point at the old UIDs. Rewrites `d/<old>` → `d/tl-<old>` for in-folder targets. Idempotent. |
-| `grafana-clean-maps.py` | teslalogger builds an HTML address tooltip the native geomap can't render; this strips the markup, hides the per-layer legend, sets a high-contrast marker style, and converts ordered position-history maps to thin route layers. Idempotent. |
+| `grafana-clean-maps.py` | teslalogger builds an HTML address tooltip the native geomap can't render; this strips the markup, hides the per-layer legend, sets a high-contrast marker style, converts ordered position-history maps to thin route layers, and adds parked/charging landmark layers. Idempotent. |
 
 ## Requirements
 
@@ -37,6 +37,8 @@ GPL content is copied into this repo.
 | `MARKER_COLOR` | `#F2495C` | clean-maps |
 | `ROUTE_COLOR` | `#E02F44` | clean-maps |
 | `ROUTE_WIDTH` | `2` | clean-maps |
+| `PARK_COLOR` | `#3274D9` | clean-maps |
+| `CHARGE_COLOR` | `#73BF69` | clean-maps |
 | `TL_DB_*`, `DB_*`, `TESLA_VIN` | see `backfill-teslalogger.py` | backfill |
 
 Set `DST_GRAFANA` if your Grafana isn't reachable at `grafana:3000` (e.g. a custom port).

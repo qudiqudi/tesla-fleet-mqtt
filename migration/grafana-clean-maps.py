@@ -3,11 +3,13 @@
 Clean up geomap tooltips on the migrated dashboards: teslalogger builds an HTML 'address'
 column for its old map tooltip, which native geomap renders as raw markup. This wraps each
 geomap query to strip HTML tags (and aliases it to 'info'), pins the location to the lat/lng
-columns, and converts dense position-history marker maps to thin route layers. Idempotent
-(marker comment). Run in the tools container:
+columns, converts dense position-history marker maps to thin route layers, and adds parked /
+charging landmark layers. Idempotent (marker comment). Run in the tools container:
   docker exec -e DST_GRAFANA_TOKEN=... tesla-tools python migration/grafana-clean-maps.py
 """
 import os
+import re
+from copy import deepcopy
 
 from _grafana import folder_uid, for_each_dashboard, walk_panels
 
@@ -16,13 +18,24 @@ TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
 MARK = "/*html_stripped*/"
 FILT = "/*coords_filtered*/"
+LAND = "/*landmarks_added*/"
 MARKER_COLOR = os.environ.get("MARKER_COLOR", "#F2495C")  # high-contrast red on the OSM basemap
 MARKER_SIZE = 6
 ROUTE_COLOR = os.environ.get("ROUTE_COLOR", "#E02F44")
 ROUTE_WIDTH = float(os.environ.get("ROUTE_WIDTH", "2"))
+PARK_COLOR = os.environ.get("PARK_COLOR", "#3274D9")
+CHARGE_COLOR = os.environ.get("CHARGE_COLOR", "#73BF69")
 ROUTE_STYLE = {"color": {"fixed": ROUTE_COLOR}, "opacity": 0.75, "lineWidth": ROUTE_WIDTH,
                "size": {"fixed": ROUTE_WIDTH, "min": 1, "max": 4}}
 MARKER_STYLE = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
+PARK_STYLE = {"color": {"fixed": PARK_COLOR}, "opacity": 0.95,
+              "size": {"fixed": 7, "min": 4, "max": 12},
+              "text": {"fixed": "P", "mode": "fixed"},
+              "textConfig": {"fontSize": 11, "offsetY": -14}}
+CHARGE_STYLE = {"color": {"fixed": CHARGE_COLOR}, "opacity": 0.95,
+                "size": {"fixed": 8, "min": 5, "max": 14},
+                "text": {"field": "kind", "mode": "field"},
+                "textConfig": {"fontSize": 10, "offsetY": -15}}
 
 
 def style_set(style, key, value):
@@ -43,6 +56,65 @@ def route_layer():
             "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
             "config": {"style": dict(ROUTE_STYLE), "arrow": 0},
             "tooltip": False}
+
+
+def marker_layer(name, ref_id, style):
+    return {"name": name,
+            "type": "markers",
+            "filterData": {"id": "byRefId", "options": ref_id},
+            "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
+            "config": {"showLegend": False, "style": deepcopy(style)},
+            "tooltip": True}
+
+
+def target_refids(p):
+    return {t.get("refId") for t in p.get("targets", []) if t.get("refId")}
+
+
+def next_refid(used, preferred):
+    if preferred not in used:
+        used.add(preferred)
+        return preferred
+    for code in "BCDEFGHIJKLMNOPQRSTUVWXYZ":
+        if code not in used:
+            used.add(code)
+            return code
+    return None
+
+
+def mysql_car_filter(sql):
+    match = re.search(r"\bcarid\s*=\s*('[^']+'|\$\{?[A-Za-z0-9_]+\}?|[0-9]+)", sql or "", re.I)
+    return match.group(0) if match else None
+
+
+def clone_target(base, ref_id, raw_sql):
+    tgt = deepcopy(base)
+    tgt["refId"] = ref_id
+    tgt["format"] = "table"
+    tgt["rawSql"] = raw_sql
+    tgt.pop("query", None)
+    return tgt
+
+
+def landmark_targets(base, car_filter, park_ref, charge_ref):
+    park_sql = (
+        "SELECT ROUND(p.lat,4) AS lat, ROUND(p.lng,4) AS lng, 'Parked' AS kind, "
+        "COUNT(*) AS visits, MAX(ds.EndDate) AS last_seen "
+        "FROM drivestate ds JOIN pos p ON p.id=ds.EndPos "
+        "WHERE ds.%s AND ds.EndPos IS NOT NULL AND $__timeFilter(ds.EndDate) "
+        "AND p.lat IS NOT NULL AND p.lng IS NOT NULL AND p.lat<>0 AND p.lng<>0 "
+        "GROUP BY 1,2 ORDER BY last_seen DESC LIMIT 200 %s"
+        % (car_filter, LAND))
+    charge_sql = (
+        "SELECT ROUND(p.lat,4) AS lat, ROUND(p.lng,4) AS lng, "
+        "CASE WHEN COALESCE(cs.fast_charger_type,'')<>'' THEN 'SC' ELSE 'AC' END AS kind, "
+        "COUNT(*) AS visits, MAX(cs.StartDate) AS last_seen "
+        "FROM chargingstate cs JOIN pos p ON p.id=cs.Pos "
+        "WHERE cs.%s AND cs.Pos IS NOT NULL AND $__timeFilter(cs.StartDate) "
+        "AND p.lat IS NOT NULL AND p.lng IS NOT NULL AND p.lat<>0 AND p.lng<>0 "
+        "GROUP BY 1,2,3 ORDER BY last_seen DESC LIMIT 100 %s"
+        % (car_filter, LAND))
+    return [clone_target(base, park_ref, park_sql), clone_target(base, charge_ref, charge_sql)]
 
 
 def clean_panel(p):
@@ -68,7 +140,7 @@ def clean_panel(p):
     # Wrap the query once to filter them out. Idempotent via FILT marker.
     for tgt in p.get("targets", []):
         sql = tgt.get("rawSql") or ""
-        if ("lat" in sql) and (FILT not in sql):
+        if ("lat" in sql) and (FILT not in sql) and (LAND not in sql):
             tgt["rawSql"] = ("SELECT * FROM (\n%s\n) cf "
                              "WHERE lat IS NOT NULL AND lng IS NOT NULL AND lat<>0 AND lng<>0 %s"
                              % (sql, FILT))
@@ -88,6 +160,18 @@ def clean_panel(p):
             elif not layers:
                 layers.append(route_layer())
                 n += 1
+        if not any(LAND in (t.get("rawSql") or "") for t in p.get("targets", [])):
+            base = next((t for t in p.get("targets", []) if history_query(t.get("rawSql") or "")), None)
+            car_filter = mysql_car_filter(base.get("rawSql") or "") if base else None
+            if base and car_filter:
+                used = target_refids(p)
+                park_ref = next_refid(used, "B")
+                charge_ref = next_refid(used, "C")
+                if park_ref and charge_ref:
+                    p.setdefault("targets", []).extend(landmark_targets(base, car_filter, park_ref, charge_ref))
+                    layers.append(marker_layer("Parked", park_ref, PARK_STYLE))
+                    layers.append(marker_layer("Charging", charge_ref, CHARGE_STYLE))
+                    n += 1
     # Per-layer touch-ups (idempotent):
     #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
     #  - set a high-contrast marker color/size under config.style (the proper nesting)
@@ -104,7 +188,8 @@ def clean_panel(p):
                 cfg["showLegend"] = False; n += 1
             if "size" in cfg:  # loose key superseded by style.size
                 cfg.pop("size"); n += 1
-            for k, v in MARKER_STYLE.items():
+            want = {"Parked": PARK_STYLE, "Charging": CHARGE_STYLE}.get(layer.get("name"), MARKER_STYLE)
+            for k, v in want.items():
                 n += style_set(style, k, v)
         elif ltype == "route":
             if cfg.get("arrow") not in (0, None):
