@@ -58,10 +58,19 @@ def fix_panel(p):
     beta = ("seriesMapping" in o or "dims" in o
             or any(isinstance(s.get("x"), str) or isinstance(s.get("y"), str) for s in series))
     if not beta:
+        # GA-shaped already, but manual mapping REQUIRES a frame matcher: prepSeries()
+        # silently skips any series without one and the panel renders "Err"
+        if o.get("mapping", "manual") == "manual":
+            for s in series:
+                if "frame" not in s:
+                    s["frame"] = {"matcher": {"id": "byIndex", "options": 0}}
+                    changed = 1
         return changed
     new_series = []
     for s in series:
-        ns = {}
+        # frame matcher is mandatory in manual mapping (beta stored a plain index or nothing)
+        ns = {"frame": {"matcher": {"id": "byIndex",
+                                    "options": s["frame"] if isinstance(s.get("frame"), int) else 0}}}
         for axis in ("x", "y"):
             v = s.get(axis)
             if isinstance(v, str):
