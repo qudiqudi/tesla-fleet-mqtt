@@ -93,7 +93,7 @@ IMP_CUTOFF = float(os.environ.get("TLW_IMPERIAL_CUTOFF", "0.75"))  # odo < cutof
 NULL_ZERO_FIELDS = {"VehicleSpeed", "ACChargingPower", "DCChargingPower"}
 # Fields consumed as numbers below. Some firmwares marshal numerics as JSON strings ("4.5");
 # coerce here, and never store a non-numeric value that would crash the tick arithmetic later.
-NUMERIC_FIELDS = {"VehicleSpeed", "Odometer", "Soc", "RatedRange", "IdealBatteryRange",
+NUMERIC_FIELDS = {"VehicleSpeed", "Odometer", "Soc", "BatteryLevel", "RatedRange", "IdealBatteryRange",
                   "EstBatteryRange", "OutsideTemp", "InsideTemp", "ACChargingPower",
                   "DCChargingPower", "ACChargingEnergyIn", "DCChargingEnergyIn",
                   "ChargerVoltage", "PackVoltage", "PackCurrent", "ModuleTempMin",
@@ -287,6 +287,13 @@ def power_kw(vin):
     return None
 
 
+def soc_disp(vin):
+    # displayed battery percent: teslalogger's battery_level holds the car-display value,
+    # which fleet telemetry streams as BatteryLevel; Soc is the (slightly lower) usable SoC
+    v = lv(vin, "BatteryLevel")
+    return v if v is not None else lv(vin, "Soc")
+
+
 def _range_or_rated(vin, primary):
     v = lv(vin, primary)
     return v if v is not None else lv(vin, "RatedRange")
@@ -374,7 +381,7 @@ def write_pos(vin, ts):
            outside_temp,inside_temp,battery_level,sentry_mode,is_preconditioning,
            battery_range_km,CarID) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (dt3(ts), lat, lng, as_int(lv(vin, "VehicleSpeed")), p, lv(vin, "Odometer"),
-         ideal_range(vin), lv(vin, "OutsideTemp"), lv(vin, "InsideTemp"), lv(vin, "Soc"),
+         ideal_range(vin), lv(vin, "OutsideTemp"), lv(vin, "InsideTemp"), soc_disp(vin),
          truthy_state(lv(vin, "SentryMode"), "Armed", "Aware", "Panic"),
          truthy_state(lv(vin, "HvacPower"), "On"), est_range(vin), car_id))
     s = st(vin)
@@ -399,7 +406,7 @@ def write_charging_row(vin, ts):
         """INSERT INTO charging (battery_level,charge_energy_added,charger_power,Datum,
            ideal_battery_range_km,charger_voltage,outside_temp,battery_range_km,CarID)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        (lv(vin, "Soc"), (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0),
+        (soc_disp(vin), (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0),
          (lv(vin, "ACChargingPower") or 0) + (lv(vin, "DCChargingPower") or 0), dts(ts),
          (ideal_range(vin) or 0), as_int(lv(vin, "ChargerVoltage")), lv(vin, "OutsideTemp"),
          est_range(vin), car_id))
@@ -622,9 +629,10 @@ def publish_ha(vin):
     s = st(vin)
     vstate = s["vstate"]
     mode = s["mode"]
-    ha_pub("state", vstate)
+    # the DB state table is restricted to teslalogger's vocabulary; HA keeps the richer view
+    ha_pub("state", "driving" if mode == "drive" else "charging" if mode == "charge" else vstate)
     ha_pub("sleeping", vstate == "asleep")
-    ha_pub("online", vstate in ("online", "driving", "charging"))
+    ha_pub("online", vstate == "online")
     ha_pub("driving", mode == "drive")
     ha_pub("charging", mode == "charge")
 
@@ -736,7 +744,11 @@ def tick_vin(vin, t):
     elif moving:
         set_mode(vin, "drive", t)
     else:
-        set_mode(vin, None, t)
+        # close at the LAST ACTIVITY, not at timeout expiry: teslalogger ends a drive when
+        # the car parks, not DRIVE_END_TIMEOUT later (EndDate and trip duration match)
+        s0 = st(vin)
+        end_ts = a.get("drive" if s0["mode"] == "drive" else "charge", t) if s0["mode"] else t
+        set_mode(vin, None, end_ts)
     s = st(vin)
     # a session that opened without a GPS fix (or with the DB down) has no opening row yet;
     # set_mode() won't re-enter the same mode, so retry the open here until it sticks —
@@ -755,8 +767,9 @@ def tick_vin(vin, t):
         write_pos(vin, t)
     if s["mode"] == "charge" and (t - s["last_charge_row_ts"]) >= CHARGE_ROW_INTERVAL:
         write_charging_row(vin, t)
-    set_vstate(vin, "driving" if s["mode"] == "drive" else
-                    "charging" if s["mode"] == "charge" else "online", t)
+    # teslalogger's state table only ever holds online/asleep/offline/waking — its dashboards
+    # map anything else to N/A and derive Driving/Charging from the trip/chargingstate tables
+    set_vstate(vin, "online", t)
     set_shift(vin, lv(vin, "Gear"), t)
     publish_ha(vin)
 
