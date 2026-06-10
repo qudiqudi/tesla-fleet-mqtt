@@ -24,32 +24,27 @@ MARKER_SIZE = 6
 ROUTE_COLOR = os.environ.get("ROUTE_COLOR", "#E02F44")
 ROUTE_WIDTH = float(os.environ.get("ROUTE_WIDTH", "2"))
 PARK_COLOR = os.environ.get("PARK_COLOR", "#3274D9")
-CHARGE_COLOR = os.environ.get("CHARGE_COLOR", "#FFD400")
-HALO_COLOR = os.environ.get("LANDMARK_HALO_COLOR", "#FFFFFF")
+AC_CHARGE_COLOR = os.environ.get("AC_CHARGE_COLOR", "#FFD400")
+DC_CHARGE_COLOR = os.environ.get("DC_CHARGE_COLOR", "#E02F44")
 PARK_LABEL_COLOR = os.environ.get("PARK_LABEL_COLOR", "#FFFFFF")
-CHARGE_LABEL_COLOR = os.environ.get("CHARGE_LABEL_COLOR", "#111111")
 ROUTE_STYLE = {"color": {"fixed": ROUTE_COLOR}, "opacity": 0.75, "lineWidth": ROUTE_WIDTH,
                "size": {"fixed": ROUTE_WIDTH, "min": 1, "max": 4}}
 MARKER_STYLE = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
-HALO_STYLE = {"color": {"fixed": HALO_COLOR}, "opacity": 0.9,
-              "size": {"fixed": 10, "min": 7, "max": 14},
-              "symbol": {"fixed": "img/icons/marker/circle.svg", "mode": "fixed"}}
 PARK_STYLE = {"color": {"fixed": PARK_COLOR}, "opacity": 1,
               "size": {"fixed": 7, "min": 5, "max": 10},
               "lineWidth": 2,
               "symbol": {"fixed": "img/icons/marker/square.svg", "mode": "fixed"}}
-CHARGE_STYLE = {"color": {"fixed": CHARGE_COLOR}, "opacity": 1,
-                "size": {"fixed": 8, "min": 6, "max": 11},
-                "lineWidth": 2,
-                "symbol": {"fixed": "img/icons/marker/star.svg", "mode": "fixed"}}
 PARK_LABEL_STYLE = {"color": {"fixed": PARK_LABEL_COLOR}, "opacity": 1,
                     "text": {"fixed": "P", "mode": "fixed"},
                     "textConfig": {"fontSize": 9, "offsetY": 0}}
-CHARGE_LABEL_STYLE = {"color": {"fixed": CHARGE_LABEL_COLOR}, "opacity": 1,
-                      "text": {"field": "kind", "mode": "field"},
-                      "textConfig": {"fontSize": 8, "offsetY": 0}}
+AC_CHARGE_STYLE = {"color": {"fixed": AC_CHARGE_COLOR}, "opacity": 1,
+                   "text": {"fixed": "⚡", "mode": "fixed"},
+                   "textConfig": {"fontSize": 14, "offsetY": 0}}
+DC_CHARGE_STYLE = {"color": {"fixed": DC_CHARGE_COLOR}, "opacity": 1,
+                   "text": {"fixed": "⚡", "mode": "fixed"},
+                   "textConfig": {"fontSize": 14, "offsetY": 0}}
 LANDMARK_LAYER_NAMES = {"Parked halo", "Charging halo", "Parked", "Charging",
-                        "Parked label", "Charging label"}
+                        "Parked label", "Charging label", "AC charger", "DC charger"}
 
 
 def style_set(style, key, value):
@@ -81,14 +76,12 @@ def marker_layer(name, ref_id, style):
             "tooltip": True}
 
 
-def landmark_layers(park_ref, charge_ref):
+def landmark_layers(park_ref, ac_ref, dc_ref):
     return [
-        marker_layer("Parked halo", park_ref, HALO_STYLE),
-        marker_layer("Charging halo", charge_ref, HALO_STYLE),
         marker_layer("Parked", park_ref, PARK_STYLE),
-        marker_layer("Charging", charge_ref, CHARGE_STYLE),
+        marker_layer("AC charger", ac_ref, AC_CHARGE_STYLE),
+        marker_layer("DC charger", dc_ref, DC_CHARGE_STYLE),
         marker_layer("Parked label", park_ref, PARK_LABEL_STYLE),
-        marker_layer("Charging label", charge_ref, CHARGE_LABEL_STYLE),
     ]
 
 
@@ -101,12 +94,12 @@ def landmark_ref(p, needle):
     return None
 
 
-def ensure_landmark_layers(layers, park_ref, charge_ref):
+def ensure_landmark_layers(layers, park_ref, ac_ref, dc_ref):
     keep = [layer for layer in layers if layer.get("name") not in LANDMARK_LAYER_NAMES]
-    landmarks = landmark_layers(park_ref, charge_ref)
+    landmarks = landmark_layers(park_ref, ac_ref, dc_ref)
     routes = [layer for layer in keep if layer.get("type") == "route"]
     other = [layer for layer in keep if layer.get("type") != "route"]
-    wanted = other + landmarks[:4] + routes + landmarks[4:]
+    wanted = other + landmarks[:3] + routes + landmarks[3:]
     if layers == wanted:
         return 0
     layers[:] = wanted
@@ -142,7 +135,7 @@ def clone_target(base, ref_id, raw_sql):
     return tgt
 
 
-def landmark_targets(base, car_filter, park_ref, charge_ref):
+def landmark_targets(base, car_filter, park_ref, ac_ref, dc_ref):
     park_sql = (
         "SELECT ROUND(p.lat,4) AS lat, ROUND(p.lng,4) AS lng, 'Parked' AS kind, "
         "COUNT(*) AS visits, MAX(ds.EndDate) AS last_seen "
@@ -151,16 +144,27 @@ def landmark_targets(base, car_filter, park_ref, charge_ref):
         "AND p.lat IS NOT NULL AND p.lng IS NOT NULL AND p.lat<>0 AND p.lng<>0 "
         "GROUP BY 1,2 ORDER BY last_seen DESC LIMIT 200 %s"
         % (car_filter, LAND))
-    charge_sql = (
-        "SELECT ROUND(p.lat,4) AS lat, ROUND(p.lng,4) AS lng, "
-        "CASE WHEN COALESCE(cs.fast_charger_type,'')<>'' THEN 'SC' ELSE 'AC' END AS kind, "
+    ac_sql = (
+        "SELECT ROUND(p.lat,4) AS lat, ROUND(p.lng,4) AS lng, 'AC' AS kind, "
         "COUNT(*) AS visits, MAX(cs.StartDate) AS last_seen "
         "FROM chargingstate cs JOIN pos p ON p.id=cs.Pos "
         "WHERE cs.%s AND cs.Pos IS NOT NULL AND $__timeFilter(cs.StartDate) "
+        "AND COALESCE(cs.fast_charger_type,'')='' "
         "AND p.lat IS NOT NULL AND p.lng IS NOT NULL AND p.lat<>0 AND p.lng<>0 "
-        "GROUP BY 1,2,3 ORDER BY last_seen DESC LIMIT 100 %s"
+        "GROUP BY 1,2 ORDER BY last_seen DESC LIMIT 100 %s"
         % (car_filter, LAND))
-    return [clone_target(base, park_ref, park_sql), clone_target(base, charge_ref, charge_sql)]
+    dc_sql = (
+        "SELECT ROUND(p.lat,4) AS lat, ROUND(p.lng,4) AS lng, 'DC' AS kind, "
+        "COUNT(*) AS visits, MAX(cs.StartDate) AS last_seen "
+        "FROM chargingstate cs JOIN pos p ON p.id=cs.Pos "
+        "WHERE cs.%s AND cs.Pos IS NOT NULL AND $__timeFilter(cs.StartDate) "
+        "AND COALESCE(cs.fast_charger_type,'')<>'' "
+        "AND p.lat IS NOT NULL AND p.lng IS NOT NULL AND p.lat<>0 AND p.lng<>0 "
+        "GROUP BY 1,2 ORDER BY last_seen DESC LIMIT 100 %s"
+        % (car_filter, LAND))
+    return [clone_target(base, park_ref, park_sql),
+            clone_target(base, ac_ref, ac_sql),
+            clone_target(base, dc_ref, dc_sql)]
 
 
 def clean_panel(p):
@@ -212,14 +216,34 @@ def clean_panel(p):
             if base and car_filter:
                 used = target_refids(p)
                 park_ref = next_refid(used, "B")
-                charge_ref = next_refid(used, "C")
-                if park_ref and charge_ref:
-                    p.setdefault("targets", []).extend(landmark_targets(base, car_filter, park_ref, charge_ref))
+                ac_ref = next_refid(used, "C")
+                dc_ref = next_refid(used, "D")
+                if park_ref and ac_ref and dc_ref:
+                    p.setdefault("targets", []).extend(landmark_targets(base, car_filter, park_ref,
+                                                                         ac_ref, dc_ref))
                     n += 1
         park_ref = landmark_ref(p, "from drivestate")
-        charge_ref = landmark_ref(p, "from chargingstate")
-        if park_ref and charge_ref:
-            n += ensure_landmark_layers(layers, park_ref, charge_ref)
+        ac_ref = next((t.get("refId") for t in p.get("targets", [])
+                       if LAND in (t.get("rawSql") or "")
+                       and "from chargingstate" in (t.get("rawSql") or "").lower()
+                       and "coalesce(cs.fast_charger_type,'')=''" in (t.get("rawSql") or "").lower()), None)
+        dc_ref = next((t.get("refId") for t in p.get("targets", [])
+                       if LAND in (t.get("rawSql") or "")
+                       and "from chargingstate" in (t.get("rawSql") or "").lower()
+                       and "coalesce(cs.fast_charger_type,'')<>''" in (t.get("rawSql") or "").lower()), None)
+        if park_ref and not (ac_ref and dc_ref):
+            base = next((t for t in p.get("targets", []) if history_query(t.get("rawSql") or "")), None)
+            car_filter = mysql_car_filter(base.get("rawSql") or "") if base else None
+            if base and car_filter:
+                used = target_refids(p)
+                ac_ref = ac_ref or next_refid(used, "C")
+                dc_ref = dc_ref or next_refid(used, "D")
+                if ac_ref and dc_ref:
+                    _, ac_tgt, dc_tgt = landmark_targets(base, car_filter, park_ref, ac_ref, dc_ref)
+                    p.setdefault("targets", []).extend([ac_tgt, dc_tgt])
+                    n += 1
+        if park_ref and ac_ref and dc_ref:
+            n += ensure_landmark_layers(layers, park_ref, ac_ref, dc_ref)
     # Per-layer touch-ups (idempotent):
     #  - hide the layer legend ("Layer 1" box): config.showLegend, not a top-level option
     #  - set a high-contrast marker color/size under config.style (the proper nesting)
@@ -236,10 +260,9 @@ def clean_panel(p):
                 cfg["showLegend"] = False; n += 1
             if "size" in cfg:  # loose key superseded by style.size
                 cfg.pop("size"); n += 1
-            want = {"Parked halo": HALO_STYLE, "Charging halo": HALO_STYLE,
-                    "Parked": PARK_STYLE, "Charging": CHARGE_STYLE,
-                    "Parked label": PARK_LABEL_STYLE,
-                    "Charging label": CHARGE_LABEL_STYLE}.get(layer.get("name"), MARKER_STYLE)
+            want = {"Parked": PARK_STYLE, "Parked label": PARK_LABEL_STYLE,
+                    "AC charger": AC_CHARGE_STYLE,
+                    "DC charger": DC_CHARGE_STYLE}.get(layer.get("name"), MARKER_STYLE)
             for k, v in want.items():
                 n += style_set(style, k, v)
         elif ltype == "route":
