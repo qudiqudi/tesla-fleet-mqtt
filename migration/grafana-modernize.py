@@ -207,14 +207,20 @@ def to_piechart(p):
     strip(p, PIE_KEYS)
 
 
-def to_geomap(p):
+ROUTE_STYLE = {"color": {"fixed": "#E02F44"}, "opacity": 0.75, "lineWidth": 2,
+               "size": {"fixed": 2, "min": 1, "max": 4}}
+MARKER_STYLE = {"color": {"fixed": "#F2495C"}, "size": {"fixed": 6}, "opacity": 0.9}
+
+
+def to_geomap(p, route=False):
+    layer_type = "route" if route else "markers"
+    config = {"style": ROUTE_STYLE, "arrow": 0} if route else {
+        "showLegend": False, "style": MARKER_STYLE}
     p["options"] = {"basemap": {"type": "osm-standard"}, "view": {"id": "fit"},
-                    "layers": [{"type": "markers",
+                    "layers": [{"type": layer_type,
                                 "location": {"mode": "coords", "latitude": "lat", "longitude": "lng"},
-                                "config": {"showLegend": False,
-                                           "style": {"color": {"fixed": "#F2495C"},
-                                                     "size": {"fixed": 6}, "opacity": 0.9}},
-                                "tooltip": True}]}
+                                "config": config,
+                                "tooltip": not route}]}
     fc(p)
     p["type"] = "geomap"
     strip(p, MAP_KEYS)
@@ -272,7 +278,7 @@ def convert(p):
     if t == "natel-discrete-panel" or (t == "state-timeline" and st_needs):
         discrete_to_state_timeline(p)
     elif t in ("grafana-worldmap-panel", "pr0ps-trackmap-panel"):
-        to_geomap(p)
+        to_geomap(p, route=(t == "pr0ps-trackmap-panel"))
     elif t == "grafana-piechart-panel":
         to_piechart(p)
     elif t in ("graph", "timeseries") and needs_graph(p):
