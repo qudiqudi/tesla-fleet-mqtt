@@ -32,22 +32,22 @@ ROUTE_STYLE = {"color": {"fixed": ROUTE_COLOR}, "opacity": 0.75, "lineWidth": RO
                "size": {"fixed": ROUTE_WIDTH, "min": 1, "max": 4}}
 MARKER_STYLE = {"color": {"fixed": MARKER_COLOR}, "size": {"fixed": MARKER_SIZE}, "opacity": 0.9}
 HALO_STYLE = {"color": {"fixed": HALO_COLOR}, "opacity": 0.9,
-              "size": {"fixed": 20, "min": 14, "max": 26},
+              "size": {"fixed": 10, "min": 7, "max": 14},
               "symbol": {"fixed": "img/icons/marker/circle.svg", "mode": "fixed"}}
 PARK_STYLE = {"color": {"fixed": PARK_COLOR}, "opacity": 1,
-              "size": {"fixed": 14, "min": 10, "max": 18},
+              "size": {"fixed": 7, "min": 5, "max": 10},
               "lineWidth": 2,
               "symbol": {"fixed": "img/icons/marker/square.svg", "mode": "fixed"}}
 CHARGE_STYLE = {"color": {"fixed": CHARGE_COLOR}, "opacity": 1,
-                "size": {"fixed": 16, "min": 11, "max": 20},
+                "size": {"fixed": 8, "min": 6, "max": 11},
                 "lineWidth": 2,
                 "symbol": {"fixed": "img/icons/marker/star.svg", "mode": "fixed"}}
 PARK_LABEL_STYLE = {"color": {"fixed": PARK_LABEL_COLOR}, "opacity": 1,
                     "text": {"fixed": "P", "mode": "fixed"},
-                    "textConfig": {"fontSize": 12, "offsetY": 0}}
+                    "textConfig": {"fontSize": 9, "offsetY": 0}}
 CHARGE_LABEL_STYLE = {"color": {"fixed": CHARGE_LABEL_COLOR}, "opacity": 1,
                       "text": {"field": "kind", "mode": "field"},
-                      "textConfig": {"fontSize": 10, "offsetY": 0}}
+                      "textConfig": {"fontSize": 8, "offsetY": 0}}
 LANDMARK_LAYER_NAMES = {"Parked halo", "Charging halo", "Parked", "Charging",
                         "Parked label", "Charging label"}
 
@@ -103,7 +103,10 @@ def landmark_ref(p, needle):
 
 def ensure_landmark_layers(layers, park_ref, charge_ref):
     keep = [layer for layer in layers if layer.get("name") not in LANDMARK_LAYER_NAMES]
-    wanted = keep + landmark_layers(park_ref, charge_ref)
+    landmarks = landmark_layers(park_ref, charge_ref)
+    routes = [layer for layer in keep if layer.get("type") == "route"]
+    other = [layer for layer in keep if layer.get("type") != "route"]
+    wanted = other + landmarks[:4] + routes + landmarks[4:]
     if layers == wanted:
         return 0
     layers[:] = wanted
