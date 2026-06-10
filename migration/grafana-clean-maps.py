@@ -186,12 +186,19 @@ def mysql_car_filter(sql):
     return match.group(0) if match else None
 
 
+def tl_car_filter(sql):
+    # The Visited query scopes by car with `CarID in ($Car)`; fall back to the `=` form.
+    match = re.search(r"\bcarid\s+in\s*\([^)]*\)", sql or "", re.I)
+    return match.group(0) if match else mysql_car_filter(sql)
+
+
 def clone_target(base, ref_id, raw_sql):
     tgt = deepcopy(base)
     tgt["refId"] = ref_id
     tgt["format"] = "table"
     tgt["rawSql"] = raw_sql
     tgt.pop("query", None)
+    tgt.pop("hide", None)  # clones are rendered; never inherit a hidden source's hide flag
     return tgt
 
 
@@ -290,14 +297,30 @@ def tl_visited_panel(p):
         return 0
     sc_sql = "SELECT * FROM (\n%s\n) tlv WHERE type = 1 %s" % (base_sql, VISITED_TL)
     dc_sql = "SELECT * FROM (\n%s\n) tlv WHERE type = 2 %s" % (base_sql, VISITED_TL)
-    wanted_targets = keep + [clone_target(base, sc_ref, sc_sql),
-                             clone_target(base, dc_ref, dc_sql)]
+    new_targets = [clone_target(base, sc_ref, sc_sql), clone_target(base, dc_ref, dc_sql)]
+    # Draw the connected line through the RAW position history so it follows the roads. The union's
+    # track branch is time-bucket-averaged (teslalogger downsampling); connected as a line those
+    # sparse points turn into straight chords cutting across blocks. A raw ordered pos query traces
+    # the streets like teslalogger's map. Falls back to the union if we can't read the car filter.
+    car_filter = tl_car_filter(base_sql)
+    route_ref = next_refid(used, "D") if car_filter else None
+    if route_ref:
+        raw_sql = ("SELECT lat, lng FROM pos WHERE %s AND $__timeFilter(datum) "
+                   "AND lat IS NOT NULL AND lng IS NOT NULL AND lat<>0 AND lng<>0 "
+                   "ORDER BY CarID, datum, id %s" % (car_filter, VISITED_TL))
+        new_targets.append(clone_target(base, route_ref, raw_sql))
+    else:
+        route_ref = base_ref
+    wanted_targets = keep + new_targets
+    # The union (base) is only the source we slice the charger queries from; nothing renders it, so
+    # hide it to avoid running that heavy aggregate a third time.
+    base["hide"] = bool(route_ref != base_ref)
     n = 0
     if targets != wanted_targets:
         p["targets"] = wanted_targets
         n += 1
     route = route_layer()
-    route["filterData"] = {"id": "byRefId", "options": base_ref}
+    route["filterData"] = {"id": "byRefId", "options": route_ref}
     route["config"]["style"] = dict(VISITED_ROUTE_STYLE)
     wanted_layers = [route]
     wanted_layers += charger_layers("Supercharger", sc_ref, VISITED_SC_DISC_STYLE, VISITED_SC_GLYPH_STYLE)
@@ -333,7 +356,7 @@ def clean_panel(p):
     # Wrap the query once to filter them out. Idempotent via FILT marker.
     for tgt in p.get("targets", []):
         sql = tgt.get("rawSql") or ""
-        if ("lat" in sql) and (FILT not in sql) and (LAND not in sql):
+        if ("lat" in sql) and (FILT not in sql) and (LAND not in sql) and (VISITED_TL not in sql):
             tgt["rawSql"] = ("SELECT * FROM (\n%s\n) cf "
                              "WHERE lat IS NOT NULL AND lng IS NOT NULL AND lat<>0 AND lng<>0 %s"
                              % (sql, FILT))
