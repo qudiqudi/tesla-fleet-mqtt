@@ -16,18 +16,24 @@ empty chart for the old shape (the query still returns data):
                "y": {"matcher": {"id": "byName", "options": "charger_power"}},
                "color": {"matcher": {"id": "byName", "options": "color"}}}]}
 
-Idempotent: panels already in the GA shape are left untouched. Run in the tools
-container (this stack's Grafana listens on :3003):
+The panel must also carry pluginVersion >= 11.1: Grafana's xyChartMigrationHandler
+re-runs the beta->GA migration whenever pluginVersion is missing or older (API-posted
+dashboards never get one stamped), which mangles already-GA options into invalid
+matchers and renders "Err".
+
+Idempotent: panels already in the GA shape with a pluginVersion are left untouched.
+Run in the tools container (this stack's Grafana listens on :3003):
   docker exec -e DST_GRAFANA_TOKEN=... -e DST_GRAFANA=http://grafana:3003 \
     tesla-tools python migration/grafana-fix-xychart.py
 """
 import os
 
-from _grafana import folder_uid, for_each_dashboard, search_dashboards, walk_panels
+from _grafana import api, folder_uid, for_each_dashboard, search_dashboards, walk_panels
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
 FOLDER = os.environ.get("DST_FOLDER", "Tesla (teslalogger)")
+GRAFANA_VERSION = None  # resolved in main(); fix_panel falls back to 11.1.0
 
 
 def by_name(field):
@@ -37,12 +43,22 @@ def by_name(field):
 def fix_panel(p):
     if p.get("type") != "xychart":
         return 0
+    changed = 0
+    # stamp pluginVersion so Grafana skips xyChartMigrationHandler (it fires when the
+    # version is missing or < 11.1 and corrupts options that are already GA-shaped)
+    try:
+        pv = float(".".join(str(p.get("pluginVersion") or "0").split(".")[:2]))
+    except ValueError:
+        pv = 0.0
+    if pv < 11.1:
+        p["pluginVersion"] = GRAFANA_VERSION or "11.1.0"
+        changed = 1
     o = p.get("options", {})
     series = o.get("series", [])
     beta = ("seriesMapping" in o or "dims" in o
             or any(isinstance(s.get("x"), str) or isinstance(s.get("y"), str) for s in series))
     if not beta:
-        return 0
+        return changed
     new_series = []
     for s in series:
         ns = {}
@@ -71,6 +87,8 @@ def fix_panel(p):
 
 
 def main():
+    global GRAFANA_VERSION
+    GRAFANA_VERSION = api("GET", "/api/health", TOK, DST).json().get("version") or "11.1.0"
     fu = folder_uid(FOLDER, TOK, DST)
     if not fu:
         print("folder '%s' not found" % FOLDER); return
