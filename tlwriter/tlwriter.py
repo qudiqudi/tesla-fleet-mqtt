@@ -330,6 +330,26 @@ def charger_name(lat, lng, brand=None):
     return None
 
 
+def nearby_charger_name(lat, lng):
+    # A drive start/end that sits on a charge stop we've already named should show that operator,
+    # like teslalogger's geofence (which covered the drive ends at a charger too). Reuse the nearest
+    # named charge stop within CHARGER_RADIUS -- one cheap query over the small chargingstate set, no
+    # API call, no brand needed (the charge that named it already picked the right operator). Street
+    # addresses and the home label aren't inherited (the latter only belongs inside the home zone).
+    if not CHARGER_NAMES:
+        return None
+    with _geo_conn().cursor() as cur:
+        cur.execute(
+            "SELECT cp.address FROM chargingstate cs JOIN pos cp ON cp.id=cs.Pos"
+            " WHERE cs.CarID=%s AND cp.lat IS NOT NULL AND cp.address IS NOT NULL AND cp.address<>''"
+            " AND cp.address<>%s AND cp.address NOT REGEXP '^[0-9]{5} ' AND cp.address NOT REGEXP '^[a-z]{2}-'"
+            " AND ST_Distance_Sphere(POINT(cp.lng,cp.lat),POINT(%s,%s))<=%s"
+            " ORDER BY ST_Distance_Sphere(POINT(cp.lng,cp.lat),POINT(%s,%s)) LIMIT 1",
+            (car_id, HOME_LABEL, lng, lat, CHARGER_RADIUS, lng, lat))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 def geocode_worker():
     global _geo_db, _geo_last
     backfill_geocode()   # one-shot at startup, in this thread (only thread touching the geo conn)
@@ -350,6 +370,10 @@ def geocode_worker():
                 continue   # 0,0 is a no-fix glitch, not a place -- don't label it "0.00000, 0.00000"
             if HOME and home_dist_m(lat, lng) <= HOME_RADIUS:
                 addr = HOME_LABEL   # home wins first, so home AC charging stays "Home" (no lookup)
+            # a drive endpoint (not a charge stop) sitting on a named charge stop reuses it; computed
+            # lazily here so home positions and charge stops never pay for the query
+            elif not (is_charger and CHARGER_NAMES) and (inherited := nearby_charger_name(lat, lng)):
+                addr = inherited
             else:
                 wait = GEOCODE_MIN_INTERVAL - (now() - _geo_last)
                 if wait > 0:
