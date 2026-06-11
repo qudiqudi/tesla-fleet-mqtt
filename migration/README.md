@@ -17,6 +17,7 @@ GPL content is copied into this repo.
 | `grafana-modernize.py` | Converts the dead Angular panel types (graph, natel-discrete, worldmap/trackmap, piechart plugin) to native React panels **and translates their display config** (axis units, legends, series overrides, value mappings) so labels/colors survive. Idempotent. |
 | `grafana-fix-links.py` | Because migrate prefixes UIDs with `tl-`, cross-dashboard drilldown links still point at the old UIDs. Rewrites `d/<old>` → `d/tl-<old>` for in-folder targets. Also severs the teslalogger-admin dependencies so dashboards survive its sunset: the address-column "Add Geofence" link is repointed to OpenStreetMap at the row's coordinates, and the dead "Admin Panel" nav links are removed. Idempotent. |
 | `cleanup-geofences.py` | One-time normalisation of teslalogger geofence labels left in `pos.address`. Home positions (within `HOME_RADIUS` of `HOME_LAT`/`HOME_LNG`) → `HOME_LABEL`; every other geofence label (work, named chargers) is reverse-geocoded to a street address, one Nominatim request per distinct location. Idempotent. |
+| `name-chargers.py` | One-time backfill of charger names onto past charge stops (the live counterpart runs in tlwriter on charge start). Each charge location still on a street address is renamed after its operator via Open Charge Map (needs `OCM_API_KEY`) then OSM Overpass; unknown spots keep their address, home stays `HOME_LABEL`. One lookup per distinct location. Idempotent. |
 | `grafana-clean-maps.py` | teslalogger builds an HTML address tooltip the native geomap can't render; this strips the markup, hides the per-layer legend, sets a high-contrast marker style, converts ordered position-history maps to thin route layers, adds parked/charging landmark layers, and rebuilds the "Visited" map (track + chargers in one UNION) into a teslalogger-style route line plus charger pins. Idempotent. |
 
 ## Requirements
@@ -61,6 +62,8 @@ GPL content is copied into this repo.
 | `DB_*`, `TLW_DB_NAME`, `TESLA_VIN` | see tlwriter | cleanup-geofences |
 | `HOME_LAT`/`HOME_LNG`, `HOME_RADIUS`, `HOME_LABEL` | unset / `50` / `Home` | cleanup-geofences (home zone, same as tlwriter) |
 | `NOMINATIM_URL`, `GEOCODE_USER_AGENT`, `GEOCODE_MIN_INTERVAL` | OSM / tlwriter UA / `1.1` | cleanup-geofences (reverse geocoding) |
+| `DB_*`, `TLW_DB_NAME`, `TESLA_VIN`, `HOME_*` | see tlwriter | name-chargers |
+| `OCM_API_KEY`, `OCM_API_URL`, `OVERPASS_URL`, `CHARGER_RADIUS` | — / OCM / Overpass / `75` | name-chargers (charger lookup) |
 
 Set `DST_GRAFANA` if your Grafana isn't reachable at `grafana:3000` (e.g. a custom port).
 
