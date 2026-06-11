@@ -29,6 +29,11 @@ SRC = dict(host=os.environ.get("TL_DB_HOST", "teslalogger-db"), port=int(os.envi
 OFFSET_H = int(os.environ.get("TZ_SHIFT_HOURS", "2"))   # UTC -> CEST
 APPLY = os.environ.get("CONFIRM", "").lower() in ("1", "yes", "true")
 MARKER = "fix-timezone-v1"
+# Safety floor: only shift rows from the tlwriter era (its first day onward). find_fork trusts the
+# source teslalogger DB to still match the snapshot, but the live teslalogger modifies its own old
+# rows (e.g. chargingstate cost/UnplugDate), so a fork can land far too low and try to drag in years
+# of imported history. This floor makes that impossible -- nothing before the era is ever shifted.
+ERA_START = os.environ.get("TLW_ERA_START", "2026-06-08 00:00:00")
 
 # table -> (fork column present in both DBs, [datetime cols to shift], upper-bound id).
 # The upper bound is the max id captured just before the local-time deploy: rows in (fork, cap]
@@ -116,14 +121,16 @@ def main():
             if not cols or not has_col(ca, table, forkcol):
                 print("  %-13s: skipped (columns missing)" % table); continue
             fork = find_fork(a, b, table, forkcol)
-            where = "id>%s AND id<=%s"
-            n = one(ca, "SELECT COUNT(*) FROM %s WHERE %s" % (table, where), (fork, cap))
+            where = "id>%s AND id<=%s AND " + forkcol + ">=%s"   # era floor -- see ERA_START
+            wargs = (fork, cap, ERA_START)
+            n = one(ca, "SELECT COUNT(*) FROM %s WHERE %s" % (table, where), wargs)
             span = "—"
             if n:
-                lo = one(ca, "SELECT MIN(%s) FROM %s WHERE %s" % (forkcol, table, where), (fork, cap))
-                hi = one(ca, "SELECT MAX(%s) FROM %s WHERE %s" % (forkcol, table, where), (fork, cap))
+                lo = one(ca, "SELECT MIN(%s) FROM %s WHERE %s" % (forkcol, table, where), wargs)
+                hi = one(ca, "SELECT MAX(%s) FROM %s WHERE %s" % (forkcol, table, where), wargs)
                 span = "%s .. %s" % (lo, hi)
-            print("  %-13s fork id=%-7d shift (%d,%d]=%-5d %s" % (table, fork, fork, cap, n, span))
+            print("  %-13s fork id=%-7d shift (%d,%d]>=%s = %-5d %s"
+                  % (table, fork, fork, cap, ERA_START[:10], n, span))
             total += n
             if APPLY and n:
                 if not cest_safe(lo, hi):
@@ -131,7 +138,7 @@ def main():
                                      " shift could be wrong across a DST boundary -- aborting before any"
                                      " write. Inspect and shift manually." % (table, span, OFFSET_H))
                 sets = ", ".join("%s = %s + INTERVAL %d HOUR" % (c, c, OFFSET_H) for c in cols)
-                ca.execute("UPDATE %s SET %s WHERE %s" % (table, sets, where), (fork, cap))
+                ca.execute("UPDATE %s SET %s WHERE %s" % (table, sets, where), wargs)
 
     if APPLY:
         with a.cursor() as c:
