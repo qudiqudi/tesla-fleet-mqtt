@@ -19,6 +19,7 @@ Run in the tools container:
   docker exec -e OCM_API_KEY=... tesla-tools python migration/name-chargers.py
 """
 import json
+import math
 import os
 import re
 import time
@@ -63,6 +64,12 @@ def brand_class(b):
     if not b:
         return None
     return "tesla" if "tesla" in b else "third"
+
+
+def dist_m(lat1, lng1, lat2, lng2):
+    dx = math.radians(lng2 - lng1) * math.cos(math.radians((lat1 + lat2) / 2))
+    dy = math.radians(lat2 - lat1)
+    return 6371000.0 * math.hypot(dx, dy)
 
 
 def needs_attention(address, eff):
@@ -179,18 +186,29 @@ def main():
                   " FROM chargingstate cs JOIN pos p ON p.id=cs.Pos"
                   " WHERE p.lat IS NOT NULL AND NOT (p.lat=0 AND p.lng=0)" + car + home, args + hargs)
         rows = c.fetchall()
-    # group by location; resolve each stop's effective brand (own, else the location's recorded one)
-    groups = {}
-    for pid, lat, lng, brand, address in rows:
-        groups.setdefault((round(float(lat), 4), round(float(lng), 4)), []).append(
-            (pid, float(lat), float(lng), brand, address))
-    todo = {}
-    for k, members in groups.items():
-        present = {brand_class(x[3]) for x in members} - {None}
-        loc = "tesla" if present == {"tesla"} else "third" if present == {"third"} else None
-        items = [(pid, address, brand_class(brand) or loc) for pid, _, _, brand, address in members]
-        if any(needs_attention(a, e) for _, a, e in items):
-            todo[k] = (members[0][1], members[0][2], items)
+    # Resolve each stop's effective brand: its own recorded brand, else the nearest recorded brand
+    # within CHARGER_RADIUS (co-located stalls share an operator even when 4-decimal rounding would
+    # split them into different buckets -- that split is why a Supercharger charge next to a brand-
+    # less one was mislabelled). Then group by rounded location for one lookup per place.
+    pts = [(pid, float(lat), float(lng), brand_class(brand), address) for pid, lat, lng, brand, address in rows]
+    branded = [(la, lo, bc) for _, la, lo, bc, _ in pts if bc]
+
+    def eff_brand(la, lo, own):
+        if own:
+            return own
+        best, bestd = None, CHARGER_RADIUS
+        for bla, blo, bc in branded:
+            d = dist_m(la, lo, bla, blo)
+            if d < bestd:   # strict: first (nearest) wins ties deterministically across re-runs
+                best, bestd = bc, d
+        return best
+
+    groups = {}   # rounded location -> [rep_lat, rep_lng, [(pid, address, eff)]]
+    for pid, la, lo, own, address in pts:
+        g = groups.setdefault((round(la, 4), round(lo, 4)), [la, lo, []])
+        g[2].append((pid, address, eff_brand(la, lo, own)))
+    todo = {k: (g[0], g[1], g[2]) for k, g in groups.items()
+            if any(needs_attention(a, e) for _, a, e in g[2])}
     print("naming: %d stop(s) to (re)name across %d location(s) (of %d charged locations)"
           % (sum(sum(needs_attention(a, e) for _, a, e in it) for _, _, it in todo.values()),
              len(todo), len(groups)))
@@ -221,6 +239,49 @@ def main():
             tag = {"tesla": " [Tesla]", "third": " [CCS]"}.get(klass, "")
             print("  [%d/%d] %s (%d stop(s))%s" % (i, len(todo), name, len(pids), tag))
     print("(re)named %d charge stop(s)" % named)
+
+    # Propagate charger names onto drive start/end positions that sit on a named charge stop, so a
+    # trip from/to a charger shows the operator (like teslalogger's geofence) rather than a street
+    # address. The charge stop already encodes the right operator (incl. brand disambiguation), so a
+    # drive endpoint just reuses the nearest named stop within CHARGER_RADIUS. Idempotent (a named
+    # endpoint no longer matches the street filter).
+    cid = args[0] if args else None
+    cf_cs = " AND cs.CarID=%s" if cid else ""
+    cf_ds = " WHERE CarID=%s" if cid else ""
+    with db.cursor() as c:
+        c.execute("SELECT DISTINCT p.lat, p.lng, p.address FROM chargingstate cs JOIN pos p ON p.id=cs.Pos"
+                  " WHERE p.lat IS NOT NULL AND p.address IS NOT NULL AND p.address<>'' AND p.address<>%s"
+                  " AND p.address NOT REGEXP '^[0-9]{5} ' AND p.address NOT REGEXP '^[a-z]{2}-'" + cf_cs,
+                  [HOME_LABEL] + (args if cid else []))
+        chargers = [(float(la), float(lo), nm) for la, lo, nm in c.fetchall()]
+        # exclude the home zone so a home endpoint near a public charger stays Home, matching the
+        # live worker (which checks HOME before inheriting a charger name)
+        hfilter = " AND ST_Distance_Sphere(POINT(p.lng,p.lat),POINT(%s,%s))>%s" if HOME else ""
+        c.execute("SELECT p.id, p.lat, p.lng FROM pos p"
+                  " WHERE p.lat IS NOT NULL AND NOT (p.lat=0 AND p.lng=0)"
+                  " AND (p.address IS NULL OR p.address='' OR p.address REGEXP '^[0-9]{5} '"
+                  " OR p.address REGEXP '^[a-z]{2}-')" + hfilter
+                  + " AND p.id IN (SELECT StartPos FROM drivestate" + cf_ds
+                  + " UNION SELECT EndPos FROM drivestate" + cf_ds + ")",
+                  (hargs if HOME else []) + (args + args if cid else []))
+        ends = c.fetchall()
+    print("propagating to drive endpoints: %d named charger location(s), %d candidate endpoint(s)"
+          % (len(chargers), len(ends)))
+    prop = 0
+    for pid, la, lo in ends:
+        la, lo = float(la), float(lo)
+        best, bestd = None, CHARGER_RADIUS
+        for cla, clo, nm in chargers:
+            d = dist_m(la, lo, cla, clo)
+            if d < bestd:
+                best, bestd = nm, d
+        if best:
+            with db.cursor() as c:
+                # re-check the street filter so a re-run can't clobber an already-named endpoint
+                c.execute("UPDATE pos SET address=%s WHERE id=%s AND (address IS NULL OR address=''"
+                          " OR address REGEXP '^[0-9]{5} ' OR address REGEXP '^[a-z]{2}-')", (best, pid))
+            prop += 1
+    print("named %d drive endpoint(s) after their charger" % prop)
 
 
 if __name__ == "__main__":
