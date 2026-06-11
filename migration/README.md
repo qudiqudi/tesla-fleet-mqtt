@@ -15,13 +15,15 @@ GPL content is copied into this repo.
 | `backfill-teslalogger.py` | One-time import of historical drives/charges from teslalogger's DB into this stack's DB. Idempotent (`source='backfill'`). |
 | `grafana-migrate.py` | Copies every dashboard from your teslalogger Grafana into your target Grafana, repointing each panel at your target datasource. UIDs get a `tl-` prefix to avoid collisions. |
 | `grafana-modernize.py` | Converts the dead Angular panel types (graph, natel-discrete, worldmap/trackmap, piechart plugin) to native React panels **and translates their display config** (axis units, legends, series overrides, value mappings) so labels/colors survive. Idempotent. |
-| `grafana-fix-links.py` | Because migrate prefixes UIDs with `tl-`, cross-dashboard drilldown links still point at the old UIDs. Rewrites `d/<old>` → `d/tl-<old>` for in-folder targets. Idempotent. |
+| `grafana-fix-links.py` | Because migrate prefixes UIDs with `tl-`, cross-dashboard drilldown links still point at the old UIDs. Rewrites `d/<old>` → `d/tl-<old>` for in-folder targets. Also severs the teslalogger-admin dependencies so dashboards survive its sunset: the address-column "Add Geofence" link is repointed to OpenStreetMap at the row's coordinates, and the dead "Admin Panel" nav links are removed. Idempotent. |
+| `cleanup-geofences.py` | One-time normalisation of teslalogger geofence labels left in `pos.address`. Home positions (within `HOME_RADIUS` of `HOME_LAT`/`HOME_LNG`) → `HOME_LABEL`; every other geofence label (work, named chargers) is reverse-geocoded to a street address, one Nominatim request per distinct location. Idempotent. |
 | `grafana-clean-maps.py` | teslalogger builds an HTML address tooltip the native geomap can't render; this strips the markup, hides the per-layer legend, sets a high-contrast marker style, converts ordered position-history maps to thin route layers, adds parked/charging landmark layers, and rebuilds the "Visited" map (track + chargers in one UNION) into a teslalogger-style route line plus charger pins. Idempotent. |
 
 ## Requirements
 
 - Python 3 with `requests` (Grafana scripts) and `pymysql` (backfill).
-- Network access to the source and target Grafana, and to both databases for the backfill.
+- Network access to the source and target Grafana, to both databases for the backfill, and to
+  the Nominatim endpoint for cleanup-geofences.
 - A Grafana service-account token with an editor/admin role on the **target** Grafana.
 
 ## Configuration (all via environment)
@@ -56,6 +58,9 @@ GPL content is copied into this repo.
 | `VISITED_DOT_SIZE` | `8` | clean-maps charger disc radius |
 | `VISITED_HALO_WIDTH` | `3` | clean-maps pin border width |
 | `TL_DB_*`, `DB_*`, `TESLA_VIN` | see `backfill-teslalogger.py` | backfill |
+| `DB_*`, `TLW_DB_NAME`, `TESLA_VIN` | see tlwriter | cleanup-geofences |
+| `HOME_LAT`/`HOME_LNG`, `HOME_RADIUS`, `HOME_LABEL` | unset / `50` / `Home` | cleanup-geofences (home zone, same as tlwriter) |
+| `NOMINATIM_URL`, `GEOCODE_USER_AGENT`, `GEOCODE_MIN_INTERVAL` | OSM / tlwriter UA / `1.1` | cleanup-geofences (reverse geocoding) |
 
 Set `DST_GRAFANA` if your Grafana isn't reachable at `grafana:3000` (e.g. a custom port).
 
