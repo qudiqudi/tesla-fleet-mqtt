@@ -143,7 +143,10 @@ Zones) and they resolve from the coordinates; there are no stack-side geofence e
 tlwriter reverse-geocodes each drive's start/end into `pos.address` (public OSM Nominatim by
 default, throttled to 1 req/s; `TLW_GEOCODE=0` to disable, `NOMINATIM_URL` for your own instance),
 so named start/end locations show on the teslalogger Trip dashboard like before. Existing
-un-addressed drives are backfilled once at startup.
+un-addressed drives are backfilled once at startup. An address is never left blank -- a sparse
+result falls back to the place name, then to the raw coordinates. Set `HOME_LAT`/`HOME_LNG` (with
+`HOME_RADIUS`, default 50 m, and `HOME_LABEL`, default `Home`) to name positions near home like a
+geofence instead of a street address; general geofencing stays with Home Assistant's own zones.
 
 Set the device identity in `.env`:
 ```

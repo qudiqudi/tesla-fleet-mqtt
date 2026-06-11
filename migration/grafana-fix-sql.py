@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Fix teslalogger SQL that breaks on current MariaDB/Grafana. These queries also fail on
-teslalogger's own (watchtower-updated) Grafana -- they are query bugs, not migration
-regressions. Applies four idempotent rewrites to every panel target in the folder:
+Fix teslalogger SQL that breaks on (or reads wrong against tlwriter on) current MariaDB/Grafana.
+These queries also fail on teslalogger's own (watchtower-updated) Grafana -- they are query bugs,
+not migration regressions. Applies five idempotent rewrites to every panel target in the folder:
 
   1. `ORDER BY time_sec[ ASC|DESC]`  -> `ORDER BY 1`
      teslalogger selects `$__time(col)` (aliased "time") as the first column but orders by
@@ -56,6 +56,15 @@ def fix_sql(sql):
     #    with an empty filter. COALESCE to '' so an empty filter still matches NULL-address rows.
     sql = re.sub(r"(?i)\b(Start_address|End_address)\s+like\b",
                  lambda m: "COALESCE(%s,'') like" % m.group(1), sql)
+
+    # 5. The Status panels union a synthetic "online" event at each trip's EndDate
+    #    (/* end of trip is online */). teslalogger's car stays online for minutes after parking,
+    #    but tlwriter sleeps it at the exact drive-end second -- so that marker lands on the very
+    #    same timestamp as the real `asleep` state row and wins the tie, painting the car Online
+    #    long after it slept. Nudge the marker 1s earlier so the asleep row is strictly later and
+    #    wins; the marker still covers the "stayed online after the drive" case (1s is invisible).
+    sql = re.sub(r"(?i)\$__time\(\s*EndDate\s*\)(\s*,\s*2\s+as\s+status\s+from\s+trip\b)",
+                 lambda m: "$__time(DATE_SUB(EndDate, INTERVAL 1 SECOND))" + m.group(1), sql)
     return sql if sql != orig else None
 
 

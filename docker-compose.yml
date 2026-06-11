@@ -201,6 +201,12 @@ services:
       # Nominatim with NOMINATIM_URL if you have one. Set TLW_GEOCODE=0 to disable.
       TLW_GEOCODE: ${TLW_GEOCODE:-1}
       NOMINATIM_URL: ${NOMINATIM_URL:-https://nominatim.openstreetmap.org/reverse}
+      # optional single HOME geofence: positions within HOME_RADIUS m of HOME_LAT/HOME_LNG are
+      # named HOME_LABEL instead of a street address. Unset HOME_LAT/HOME_LNG -> plain geocoding.
+      HOME_LAT: ${HOME_LAT:-}
+      HOME_LNG: ${HOME_LNG:-}
+      HOME_RADIUS: ${HOME_RADIUS:-50}
+      HOME_LABEL: ${HOME_LABEL:-Home}
 
   # Home Assistant MQTT discovery: makes the car appear in HA as a device with sensors,
   # switches, numbers and a device tracker, fed by the telemetry stream + tlwriter's ha/*
