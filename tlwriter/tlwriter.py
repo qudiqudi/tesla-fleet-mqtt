@@ -251,44 +251,65 @@ def _fetch_json(req, timeout):
     return None
 
 
-def ocm_charger(lat, lng):
-    # Open Charge Map: best operator names, but needs a (free) API key
-    if not OCM_API_KEY:
+def _select_charger(cands, brand):
+    # cands: nearest-first list of (operator, place). When the car reports the charger brand, pick
+    # the matching operator instead of the closest -- so a Supercharger next to an Ionity is named
+    # for whichever the car actually used (brand "Tesla" -> the Tesla operator; anything else, a
+    # third-party CCS -> the non-Tesla operator). Unknown brand keeps the nearest.
+    cands = [(o, p) for o, p in cands if o]
+    if not cands:
         return None
+    b = (brand or "").lower()
+    if "tesla" in b:                                   # Supercharge
+        for o, p in cands:
+            if "tesla" in o.lower():
+                return _charger_label(o, p)
+        return _charger_label("Tesla Supercharger", cands[0][1])   # the SuC isn't mapped here, but we know
+    if b:                                              # a known, non-Tesla brand ("<invalid>" = CCS)
+        for o, p in cands:
+            if "tesla" not in o.lower():
+                return _charger_label(o, p)
+    return _charger_label(*cands[0])                   # unknown brand, or only Tesla mapped -> nearest
+
+
+def ocm_candidates(lat, lng):
+    # Open Charge Map: best operator names, but needs a (free) API key. Nearest-first (lat/lng query).
+    if not OCM_API_KEY:
+        return []
     params = urllib.parse.urlencode({"output": "json", "latitude": "%.6f" % lat, "longitude": "%.6f" % lng,
                                      "distance": CHARGER_RADIUS / 1000.0, "distanceunit": "KM",
-                                     "maxresults": "1", "key": OCM_API_KEY})
+                                     "maxresults": "5", "key": OCM_API_KEY})
     req = urllib.request.Request(OCM_API_URL + "?" + params, headers={"User-Agent": GEOCODE_UA})
-    d = _fetch_json(req, 15) or []
-    if not d:
-        return None
-    poi = d[0]
-    op = (poi.get("OperatorInfo") or {}).get("Title") or ""
-    ai = poi.get("AddressInfo") or {}
-    if op.lower() in ("", "(unknown operator)", "unknown"):
-        op = ai.get("Title") or ""   # fall back to the station's own title
-    return _charger_label(op, ai.get("AddressLine1") or ai.get("Town"))
+    out = []
+    for poi in _fetch_json(req, 15) or []:
+        op = (poi.get("OperatorInfo") or {}).get("Title") or ""
+        ai = poi.get("AddressInfo") or {}
+        if op.lower() in ("", "(unknown operator)", "unknown"):
+            op = ai.get("Title") or ""   # fall back to the station's own title
+        out.append((op, ai.get("AddressLine1") or ai.get("Town")))
+    return out
 
 
-def osm_charger(lat, lng):
+def osm_candidates(lat, lng):
     # OSM amenity=charging_station via Overpass: no key, reuses the data behind our geocoding
-    q = ("[out:json][timeout:25];nwr(around:%d,%.6f,%.6f)[amenity=charging_station];out tags center 1;"
+    q = ("[out:json][timeout:25];nwr(around:%d,%.6f,%.6f)[amenity=charging_station];out tags center;"
          % (int(CHARGER_RADIUS), lat, lng))
     req = urllib.request.Request(OVERPASS_URL, data=urllib.parse.urlencode({"data": q}).encode(),
                                  headers={"User-Agent": GEOCODE_UA})
-    els = (_fetch_json(req, 30) or {}).get("elements", [])
-    if not els:
-        return None
-    t = els[0].get("tags", {})
-    op = t.get("operator") or t.get("brand") or t.get("network") or t.get("name")
-    return _charger_label(op, t.get("addr:street")) if op else None
+    out = []
+    for e in (_fetch_json(req, 30) or {}).get("elements", []):
+        t = e.get("tags", {})
+        op = t.get("operator") or t.get("brand") or t.get("network") or t.get("name")
+        if op:
+            out.append((op, t.get("addr:street")))
+    return out
 
 
-def charger_name(lat, lng):
+def charger_name(lat, lng, brand=None):
     # operator name for a charge stop, OCM first then OSM; None if neither knows it (caller geocodes)
-    for fn in (ocm_charger, osm_charger):
+    for fn in (ocm_candidates, osm_candidates):
         try:
-            name = fn(lat, lng)
+            name = _select_charger(fn(lat, lng), brand)
             if name:
                 return name
         except Exception as e:
@@ -300,7 +321,7 @@ def geocode_worker():
     global _geo_db, _geo_last
     backfill_geocode()   # one-shot at startup, in this thread (only thread touching the geo conn)
     while True:
-        pos_id, is_charger = geocode_q.get()
+        pos_id, is_charger, brand = geocode_q.get()
         try:
             # Read the position's OWN coordinates rather than trusting live lat/lng at queue time:
             # a drive opens off an older idle pos, and right after wake the live Location can be
@@ -322,7 +343,7 @@ def geocode_worker():
                     time.sleep(wait)
                 _geo_last = now()   # mark the attempt up front so failures are throttled too
                 # charge stops: name them after the operator (OCM/OSM), else fall back to the address
-                addr = (charger_name(lat, lng) if is_charger and CHARGER_NAMES else None) \
+                addr = (charger_name(lat, lng, brand) if is_charger and CHARGER_NAMES else None) \
                     or geocode_address(lat, lng)
             if addr:
                 with _geo_conn().cursor() as cur:
@@ -336,10 +357,10 @@ def geocode_worker():
             geocode_q.task_done()
 
 
-def queue_geocode(vin, pos_id, charger=False):
+def queue_geocode(vin, pos_id, charger=False, brand=None):
     if not GEOCODE or pos_id is None:
         return
-    geocode_q.put((pos_id, charger))   # the worker reads the row's own coords -- see geocode_worker
+    geocode_q.put((pos_id, charger, brand))   # the worker reads the row's own coords -- see geocode_worker
 
 
 def backfill_geocode():
@@ -363,7 +384,7 @@ def backfill_geocode():
                         "ORDER BY id DESC LIMIT %s", tuple(ids) + (GEOCODE_BACKFILL_LIMIT,))
             rows = cur.fetchall()
         for (pid,) in rows:
-            geocode_q.put((pid, False))   # the worker reads each row's own coords (drive ends, not chargers)
+            geocode_q.put((pid, False, None))   # the worker reads each row's own coords (drive ends, not chargers)
         if rows:
             log("geocode: backfilling %d drive positions" % len(rows))
     except Exception as e:
@@ -464,7 +485,8 @@ def st(vin):
                                   "start_charging_id": None, "last_charging_id": None,
                                   "last_pos_id": None, "last_pos_ts": 0, "last_charge_row_ts": 0,
                                   "max_speed": 0, "max_power": 0.0, "start_energy": 0.0,
-                                  "charger_type": None, "vstate": None, "state_id": None,
+                                  "charger_type": None, "charge_pos_id": None,
+                                  "vstate": None, "state_id": None,
                                   "shift": None, "shift_id": None})
 
 
@@ -607,7 +629,7 @@ def open_charge(vin, ts):
     s["chargingstate_id"] = execute(
         "INSERT INTO chargingstate (StartDate,Pos,StartChargingID,CarID,hidden) VALUES (%s,%s,%s,%s,0)",
         (dts(ts), s["last_pos_id"], s["start_charging_id"], car_id))
-    queue_geocode(vin, s["last_pos_id"], charger=True)   # name the stop after the charging operator
+    s["charge_pos_id"] = s["last_pos_id"]   # named at close_charge, once the charger brand is known
     log("%s charge start (charging %s)" % (vin, s["start_charging_id"]))
 
 
@@ -618,10 +640,16 @@ def close_charge(vin, ts):
     write_charging_row(vin, ts)
     end_energy = (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0)
     added = end_energy - s["start_energy"] if end_energy >= s["start_energy"] else None
+    # only a DC session carries a meaningful charger brand; gating on it avoids a stale Tesla brand
+    # from an earlier Supercharge bleeding into a later AC charge (latest[] keeps the last value)
+    brand = lv(vin, "FastChargerBrand") if s.get("charger_type") == "DC" else None
     execute("""UPDATE chargingstate SET EndDate=%s, EndChargingID=%s, charge_energy_added=%s,
-               max_charger_power=%s, fast_charger_type=%s WHERE id=%s""",
+               max_charger_power=%s, fast_charger_type=%s, fast_charger_brand=%s WHERE id=%s""",
             (dts(ts), s["last_charging_id"], added, as_int(s["max_power"]), s["charger_type"],
-             s["chargingstate_id"]))
+             brand or None, s["chargingstate_id"]))
+    # name the stop now -- the brand (Tesla vs a third-party CCS) is known, so a Supercharger next
+    # to an Ionity gets the operator the car actually used, not just the nearest station
+    queue_geocode(vin, s.get("charge_pos_id"), charger=True, brand=brand)
     log("%s charge end +%skWh" % (vin, round(added, 1) if added else None))
     s["chargingstate_id"] = None
 
