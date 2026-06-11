@@ -227,6 +227,8 @@ def geocode_worker():
             if not row or row[0] is None or row[1] is None:
                 continue   # gone, already named, or no GPS fix on that row
             lat, lng = float(row[0]), float(row[1])
+            if lat == 0 and lng == 0:
+                continue   # 0,0 is a no-fix glitch, not a place -- don't label it "0.00000, 0.00000"
             if HOME and home_dist_m(lat, lng) <= HOME_RADIUS:
                 addr = HOME_LABEL   # name it like a geofence; no Nominatim call (no throttle needed)
             else:
