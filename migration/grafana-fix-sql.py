@@ -63,8 +63,11 @@ def fix_sql(sql):
     #    same timestamp as the real `asleep` state row and wins the tie, painting the car Online
     #    long after it slept. Nudge the marker 1s earlier so the asleep row is strictly later and
     #    wins; the marker still covers the "stayed online after the drive" case (1s is invisible).
-    sql = re.sub(r"(?i)\$__time\(\s*EndDate\s*\)(\s*,\s*2\s+as\s+status\s+from\s+trip\b)",
-                 lambda m: "$__time(DATE_SUB(EndDate, INTERVAL 1 SECOND))" + m.group(1), sql)
+    #    Use `EndDate - INTERVAL 1 SECOND` (NOT DATE_SUB(EndDate, ...)): Grafana's $__time macro
+    #    splits its argument on commas, so a comma inside the parens corrupts the generated SQL.
+    #    The pattern also rewrites any prior DATE_SUB(...) form so a re-run repairs broken panels.
+    sql = re.sub(r"(?i)\$__time\((?:[^()]|\([^()]*\))*\)(\s*,\s*2\s+as\s+status\s+from\s+trip\b)",
+                 lambda m: "$__time(EndDate - INTERVAL 1 SECOND)" + m.group(1), sql)
     return sql if sql != orig else None
 
 
