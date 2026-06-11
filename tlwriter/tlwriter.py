@@ -24,6 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import paho.mqtt.client as mqtt
 import pymysql
@@ -147,12 +148,24 @@ def now():
     return time.time()
 
 
+# teslalogger's schema stores wall-clock LOCAL time (its dashboards read the columns without any
+# tz conversion), and this DB is a copy of a teslalogger DB, so tlwriter must match: write local
+# time, not UTC. The Grafana MySQL datasource is set to the same local zone (SYSTEM) so the values
+# render as-is. ts is a UTC epoch; render it in LOCAL_TZ. DST is handled by the zone. A bad TLW_TZ
+# or missing tzdata must NOT crash the whole writer -- fall back to UTC (the pre-local behaviour).
+try:
+    LOCAL_TZ = ZoneInfo(os.environ.get("TLW_TZ", "Europe/Berlin"))
+except Exception as _tz_err:
+    print("TLW_TZ load failed (%r); falling back to UTC" % _tz_err, flush=True)
+    LOCAL_TZ = timezone.utc
+
+
 def dt3(ts):
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    return datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
 def dts(ts):
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 _db = None
@@ -856,9 +869,9 @@ def publish_ha(vin):
         start_ts = s.get("trip_start_ts")
         if start_ts:
             ha_pub("trip_duration_sec", int(now() - start_ts))
-            iso = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+            iso = datetime.fromtimestamp(start_ts, LOCAL_TZ).isoformat()   # tz-aware, local -- matches the DB
             ha_pub("trip_start_dt", iso)
-            ha_pub("trip_start", datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M"))
+            ha_pub("trip_start", datetime.fromtimestamp(start_ts, LOCAL_TZ).strftime("%Y-%m-%d %H:%M"))
         odo, odo0 = lv(vin, "Odometer"), s.get("trip_start_odo")
         dist = None
         if isinstance(odo, (int, float)) and isinstance(odo0, (int, float)):
