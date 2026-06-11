@@ -85,6 +85,17 @@ GEOCODE_UA = os.environ.get("GEOCODE_USER_AGENT",
 GEOCODE_MIN_INTERVAL = float(os.environ.get("GEOCODE_MIN_INTERVAL", "1.1"))  # >=1s per OSM policy
 GEOCODE_BACKFILL_LIMIT = int(os.environ.get("GEOCODE_BACKFILL_LIMIT", "200"))
 
+# Name charge stops after the charging operator (like teslalogger's charger geofences) instead of
+# a bare street address: on charge start the charge position is looked up against Open Charge Map
+# (if OCM_API_KEY is set -- free key from openchargemap.org) and then OSM's amenity=charging_station
+# via Overpass, falling back to the street address when neither knows the spot. Home charging stays
+# "Home" (the home zone wins first). TLW_CHARGER_NAMES=0 disables.
+CHARGER_NAMES = os.environ.get("TLW_CHARGER_NAMES", "1").lower() in ("1", "true", "yes")
+CHARGER_RADIUS = float(os.environ.get("CHARGER_RADIUS", "75"))  # metres around the charge position
+OCM_API_KEY = os.environ.get("OCM_API_KEY", "")
+OCM_API_URL = os.environ.get("OCM_API_URL", "https://api.openchargemap.io/v3/poi/")
+OVERPASS_URL = os.environ.get("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+
 MI_TO_KM = 1.609344
 # Distance/speed fields stream in the car's display unit; the teslalogger schema stores
 # km / km-h, so convert when the car reports miles. Tesla doesn't document the unit and a
@@ -211,11 +222,66 @@ def geocode_address(lat, lng):
     return addr[:255]
 
 
+def _charger_label(operator, place):
+    # "<operator>, <road/town>" -- keep it short and teslalogger-ish; either part may be missing
+    operator, place = (operator or "").strip(), (place or "").strip()
+    if operator and place and place.lower() not in operator.lower():
+        return ("%s, %s" % (operator, place))[:255]
+    return (operator or place)[:255] or None
+
+
+def ocm_charger(lat, lng):
+    # Open Charge Map: best operator names, but needs a (free) API key
+    if not OCM_API_KEY:
+        return None
+    params = urllib.parse.urlencode({"output": "json", "latitude": "%.6f" % lat, "longitude": "%.6f" % lng,
+                                     "distance": CHARGER_RADIUS / 1000.0, "distanceunit": "KM",
+                                     "maxresults": "1", "key": OCM_API_KEY})
+    req = urllib.request.Request(OCM_API_URL + "?" + params, headers={"User-Agent": GEOCODE_UA})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        d = json.loads(r.read().decode("utf-8", "replace")) or []
+    if not d:
+        return None
+    poi = d[0]
+    op = (poi.get("OperatorInfo") or {}).get("Title") or ""
+    ai = poi.get("AddressInfo") or {}
+    if op.lower() in ("", "(unknown operator)", "unknown"):
+        op = ai.get("Title") or ""   # fall back to the station's own title
+    return _charger_label(op, ai.get("AddressLine1") or ai.get("Town"))
+
+
+def osm_charger(lat, lng):
+    # OSM amenity=charging_station via Overpass: no key, reuses the data behind our geocoding
+    q = ("[out:json][timeout:25];nwr(around:%d,%.6f,%.6f)[amenity=charging_station];out tags center 1;"
+         % (int(CHARGER_RADIUS), lat, lng))
+    req = urllib.request.Request(OVERPASS_URL, data=urllib.parse.urlencode({"data": q}).encode(),
+                                 headers={"User-Agent": GEOCODE_UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        els = (json.loads(r.read().decode("utf-8", "replace")) or {}).get("elements", [])
+    if not els:
+        return None
+    t = els[0].get("tags", {})
+    op = t.get("operator") or t.get("brand") or t.get("network") or t.get("name")
+    return _charger_label(op, t.get("addr:street")) if op else None
+
+
+def charger_name(lat, lng):
+    # operator name for a charge stop, OCM first then OSM; None if neither knows it (caller geocodes)
+    for fn in (ocm_charger, osm_charger):
+        try:
+            name = fn(lat, lng)
+            if name:
+                return name
+        except Exception as e:
+            log("charger lookup (%s): %s" % (fn.__name__, e))
+    return None
+
+
 def geocode_worker():
     global _geo_db, _geo_last
     backfill_geocode()   # one-shot at startup, in this thread (only thread touching the geo conn)
     while True:
-        pos_id = geocode_q.get()
+        pos_id, is_charger = geocode_q.get()
         try:
             # Read the position's OWN coordinates rather than trusting live lat/lng at queue time:
             # a drive opens off an older idle pos, and right after wake the live Location can be
@@ -230,13 +296,15 @@ def geocode_worker():
             if lat == 0 and lng == 0:
                 continue   # 0,0 is a no-fix glitch, not a place -- don't label it "0.00000, 0.00000"
             if HOME and home_dist_m(lat, lng) <= HOME_RADIUS:
-                addr = HOME_LABEL   # name it like a geofence; no Nominatim call (no throttle needed)
+                addr = HOME_LABEL   # home wins first, so home AC charging stays "Home" (no lookup)
             else:
                 wait = GEOCODE_MIN_INTERVAL - (now() - _geo_last)
                 if wait > 0:
                     time.sleep(wait)
                 _geo_last = now()   # mark the attempt up front so failures are throttled too
-                addr = geocode_address(lat, lng)
+                # charge stops: name them after the operator (OCM/OSM), else fall back to the address
+                addr = (charger_name(lat, lng) if is_charger and CHARGER_NAMES else None) \
+                    or geocode_address(lat, lng)
             if addr:
                 with _geo_conn().cursor() as cur:
                     cur.execute("UPDATE pos SET address=%s WHERE id=%s AND (address IS NULL OR address='')",
@@ -249,10 +317,10 @@ def geocode_worker():
             geocode_q.task_done()
 
 
-def queue_geocode(vin, pos_id):
+def queue_geocode(vin, pos_id, charger=False):
     if not GEOCODE or pos_id is None:
         return
-    geocode_q.put(pos_id)   # the worker reads the row's own coords -- see geocode_worker
+    geocode_q.put((pos_id, charger))   # the worker reads the row's own coords -- see geocode_worker
 
 
 def backfill_geocode():
@@ -276,7 +344,7 @@ def backfill_geocode():
                         "ORDER BY id DESC LIMIT %s", tuple(ids) + (GEOCODE_BACKFILL_LIMIT,))
             rows = cur.fetchall()
         for (pid,) in rows:
-            geocode_q.put(pid)   # the worker reads each row's own coords
+            geocode_q.put((pid, False))   # the worker reads each row's own coords (drive ends, not chargers)
         if rows:
             log("geocode: backfilling %d drive positions" % len(rows))
     except Exception as e:
@@ -520,6 +588,7 @@ def open_charge(vin, ts):
     s["chargingstate_id"] = execute(
         "INSERT INTO chargingstate (StartDate,Pos,StartChargingID,CarID,hidden) VALUES (%s,%s,%s,%s,0)",
         (dts(ts), s["last_pos_id"], s["start_charging_id"], car_id))
+    queue_geocode(vin, s["last_pos_id"], charger=True)   # name the stop after the charging operator
     log("%s charge start (charging %s)" % (vin, s["start_charging_id"]))
 
 

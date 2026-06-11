@@ -207,6 +207,13 @@ services:
       HOME_LNG: ${HOME_LNG:-}
       HOME_RADIUS: ${HOME_RADIUS:-50}
       HOME_LABEL: ${HOME_LABEL:-Home}
+      # name charge stops after the charging operator (Open Charge Map then OSM) instead of a street
+      # address. OCM_API_KEY is a free key from openchargemap.org (blank = skip OCM, OSM only).
+      # TLW_CHARGER_NAMES=0 disables. Home charging stays HOME_LABEL.
+      TLW_CHARGER_NAMES: ${TLW_CHARGER_NAMES:-1}
+      OCM_API_KEY: ${OCM_API_KEY:-}
+      CHARGER_RADIUS: ${CHARGER_RADIUS:-75}
+      OVERPASS_URL: ${OVERPASS_URL:-https://overpass-api.de/api/interpreter}
 
   # Home Assistant MQTT discovery: makes the car appear in HA as a device with sensors,
   # switches, numbers and a device tracker, fed by the telemetry stream + tlwriter's ha/*
