@@ -15,6 +15,7 @@ Model (mirrors teslalogger):
     (EndChargingID, charge_energy_added = cumulative delta, max_charger_power, fast_charger_type).
 """
 import json
+import math
 import os
 import queue
 import threading
@@ -62,8 +63,17 @@ REPLAY_GRACE = float(os.environ.get("REPLAY_GRACE", "10"))  # ignore retained re
 # it already holds the authoritative session state and the km-normalised values, so HA stays
 # consistent with Grafana. Off by default so the parallel validator is unaffected.
 HA_PUBLISH = os.environ.get("HA_PUBLISH", "0").lower() in ("1", "true", "yes")
-# Geofencing is left to Home Assistant: tlwriter publishes the car's GPS and HA's own zones
-# resolve home/work/etc. So there are no geofence coords here.
+# General geofencing is left to Home Assistant (HA's own zones resolve work/etc. off the GPS we
+# publish). The one exception is a single optional HOME zone, because the address columns the
+# teslalogger trip view shows are written here, not in HA -- without it a drive from home reverse-
+# geocodes to a bare street address (or nothing). Set HOME_LAT/HOME_LNG to name positions within
+# HOME_RADIUS metres HOME_LABEL instead of geocoding them. Unset -> no home zone (plain geocoding).
+HOME_LABEL = os.environ.get("HOME_LABEL", "Home")
+HOME_RADIUS = float(os.environ.get("HOME_RADIUS", "50"))  # metres
+try:
+    HOME = (float(os.environ["HOME_LAT"]), float(os.environ["HOME_LNG"]))
+except (KeyError, ValueError):
+    HOME = None
 
 # Reverse-geocode each drive's start/end into pos.address (the teslalogger `trip` view reads
 # pos_start.address / pos_end.address). Off-thread, throttled to OSM Nominatim's 1 req/s policy
@@ -177,29 +187,54 @@ def _geo_conn():
     return _geo_db
 
 
+def home_dist_m(lat, lng):
+    # equirectangular approximation -- accurate to cm at geofence range, no need for haversine
+    dx = math.radians(lng - HOME[1]) * math.cos(math.radians((lat + HOME[0]) / 2))
+    dy = math.radians(lat - HOME[0])
+    return 6371000.0 * math.hypot(dx, dy)
+
+
 def geocode_address(lat, lng):
     params = urllib.parse.urlencode({"lat": "%.6f" % lat, "lon": "%.6f" % lng,
                                      "format": "jsonv2", "zoom": "18", "addressdetails": "1"})
     req = urllib.request.Request(NOMINATIM_URL + "?" + params, headers={"User-Agent": GEOCODE_UA})
     with urllib.request.urlopen(req, timeout=15) as r:
-        a = (json.loads(r.read().decode("utf-8", "replace")) or {}).get("address", {})
+        d = json.loads(r.read().decode("utf-8", "replace")) or {}
+    a = d.get("address", {})
     city = a.get("city") or a.get("town") or a.get("village") or a.get("municipality") or a.get("county") or ""
     left = ("%s %s" % (a.get("postcode", ""), city)).strip()
     right = ("%s %s" % (a.get("road", ""), a.get("house_number", ""))).strip()
-    return ", ".join(p for p in (left, right) if p)[:255]
+    addr = ", ".join(p for p in (left, right) if p)
+    # never return empty: a sparse rural result still has a display_name, and a coordinate string
+    # is better than a blank trip column (the dashboard hides blanks; "empty is not possible").
+    addr = addr or d.get("display_name") or "%.5f, %.5f" % (lat, lng)
+    return addr[:255]
 
 
 def geocode_worker():
     global _geo_db, _geo_last
     backfill_geocode()   # one-shot at startup, in this thread (only thread touching the geo conn)
     while True:
-        pos_id, lat, lng = geocode_q.get()
+        pos_id = geocode_q.get()
         try:
-            wait = GEOCODE_MIN_INTERVAL - (now() - _geo_last)
-            if wait > 0:
-                time.sleep(wait)
-            _geo_last = now()   # mark the attempt up front so failures are throttled too
-            addr = geocode_address(lat, lng)
+            # Read the position's OWN coordinates rather than trusting live lat/lng at queue time:
+            # a drive opens off an older idle pos, and right after wake the live Location can be
+            # stale/absent -> the start would silently never get named (the end always did because
+            # close_drive writes a fresh pos first). The pos row always has coords, so this is reliable.
+            with _geo_conn().cursor() as cur:
+                cur.execute("SELECT lat, lng FROM pos WHERE id=%s AND (address IS NULL OR address='')", (pos_id,))
+                row = cur.fetchone()
+            if not row or row[0] is None or row[1] is None:
+                continue   # gone, already named, or no GPS fix on that row
+            lat, lng = float(row[0]), float(row[1])
+            if HOME and home_dist_m(lat, lng) <= HOME_RADIUS:
+                addr = HOME_LABEL   # name it like a geofence; no Nominatim call (no throttle needed)
+            else:
+                wait = GEOCODE_MIN_INTERVAL - (now() - _geo_last)
+                if wait > 0:
+                    time.sleep(wait)
+                _geo_last = now()   # mark the attempt up front so failures are throttled too
+                addr = geocode_address(lat, lng)
             if addr:
                 with _geo_conn().cursor() as cur:
                     cur.execute("UPDATE pos SET address=%s WHERE id=%s AND (address IS NULL OR address='')",
@@ -215,9 +250,7 @@ def geocode_worker():
 def queue_geocode(vin, pos_id):
     if not GEOCODE or pos_id is None:
         return
-    lat, lng = lv(vin, "Latitude"), lv(vin, "Longitude")
-    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
-        geocode_q.put((pos_id, lat, lng))
+    geocode_q.put(pos_id)   # the worker reads the row's own coords -- see geocode_worker
 
 
 def backfill_geocode():
@@ -236,12 +269,12 @@ def backfill_geocode():
                 return
             placeholders = ",".join(["%s"] * len(ids))
             # build the IN list by concatenation (NOT %-format), so the LIMIT %s stays a pymysql param
-            cur.execute("SELECT id, lat, lng FROM pos WHERE id IN (" + placeholders + ") "
+            cur.execute("SELECT id FROM pos WHERE id IN (" + placeholders + ") "
                         "AND lat IS NOT NULL AND (address IS NULL OR address='') "
                         "ORDER BY id DESC LIMIT %s", tuple(ids) + (GEOCODE_BACKFILL_LIMIT,))
             rows = cur.fetchall()
-        for pid, lat, lng in rows:
-            geocode_q.put((pid, float(lat), float(lng)))
+        for (pid,) in rows:
+            geocode_q.put(pid)   # the worker reads each row's own coords
         if rows:
             log("geocode: backfilling %d drive positions" % len(rows))
     except Exception as e:
