@@ -598,12 +598,17 @@ def write_charging_row(vin, ts):
 
 def write_car_version(vin, version, ts):
     # teslalogger's Firmware panel reads car_version; tlwriter must keep it current. On change only.
-    if not version or _last_version.get(vin) == version:
+    # Compare/store the same normalised string, and _last_version is seeded from the DB at startup
+    # (main()) -- otherwise every restart re-inserts the unchanged firmware (the in-memory dict is
+    # empty on boot), which during a deploy storm piles up duplicate rows.
+    if not version:
         return
-    _last_version[vin] = version
-    execute("INSERT INTO car_version (StartDate, version, CarID) VALUES (%s,%s,%s)",
-            (dts(ts), str(version)[:50], car_id))
-    log("%s firmware -> %s" % (vin, version))
+    v = str(version)[:50]
+    if _last_version.get(vin) == v:
+        return
+    _last_version[vin] = v
+    execute("INSERT INTO car_version (StartDate, version, CarID) VALUES (%s,%s,%s)", (dts(ts), v, car_id))
+    log("%s firmware -> %s" % (vin, v))
 
 
 def write_tpms(vin, field, pressure, ts):
@@ -1032,6 +1037,11 @@ def main():
         r2 = c.fetchone()
         if r2 and r2[0]:
             unit_ref[VIN] = float(r2[0]); log("odometer reference: %.0f km" % unit_ref[VIN])
+        # seed last-known firmware so a restart doesn't re-insert the unchanged version
+        c.execute("SELECT version FROM car_version WHERE CarID=%s ORDER BY id DESC LIMIT 1", (car_id,))
+        r3 = c.fetchone()
+        if r3 and r3[0]:
+            _last_version[VIN] = r3[0]
     resume_sessions()   # continue open sessions across the restart instead of orphaning them
     threading.Thread(target=ticker, daemon=True).start()
     if GEOCODE:
