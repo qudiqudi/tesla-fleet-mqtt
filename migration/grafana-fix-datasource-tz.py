@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-Set the MySQL datasource's session time zone to UTC.
+Set the MySQL datasource's session time zone to the DB's local zone (SYSTEM).
 
-tlwriter writes the DB in UTC wall-clock (timezone.utc), but the MariaDB container's SYSTEM
-time zone is local (e.g. CEST). Grafana's `$__time` / `$__timeFilter` use UNIX_TIMESTAMP(),
-which interprets a DATETIME in the *session* time zone — so without a session tz set, the UTC
-values are read as local and every time-based panel renders ~2h off (the Status timeline shows
-online/asleep at the wrong time, etc.). Setting the datasource session tz to UTC makes Grafana
-read the UTC columns as UTC. Idempotent.
+The teslalogger schema stores wall-clock LOCAL time, and this DB is a copy of a teslalogger DB,
+so tlwriter writes local time too (TLW_TZ). Grafana's `$__time` / `$__timeFilter` use
+UNIX_TIMESTAMP(), which interprets a DATETIME in the *session* time zone — so the session tz must
+match the stored zone, otherwise every time-based panel renders off (the imported history showed
+~2h late). The MariaDB container runs TZ=Europe/Berlin, so its SYSTEM zone IS the local zone and
+follows DST; SET time_zone='SYSTEM' makes Grafana read the local columns as local. Idempotent.
 
-Uses the numeric offset "+00:00", NOT the named zone "UTC": MariaDB only accepts named zones
-(SET time_zone='UTC') when its time-zone tables are loaded, which they usually aren't — Grafana
-then errors on every query ("db query error: query failed"). "+00:00" always works.
+Uses "SYSTEM", NOT a named zone like "Europe/Berlin": MariaDB only accepts named zones once its
+time-zone tables are loaded, which they aren't here (CONVERT_TZ on a named zone returns NULL) —
+Grafana would then error on every query. "SYSTEM" needs no tz tables and is DST-aware via the OS.
+(If a deployment's MariaDB system zone isn't local, set DST_SESSION_TZ to a fixed offset like
+"+02:00" instead — but that won't follow DST.)
 
 The equivalent one-field UI change: Connections -> Data sources -> the MySQL datasource ->
-"Session timezone" = +00:00 -> Save & test.
+"Session timezone" = SYSTEM -> Save & test.
 
 Run in the tools container (admin/editor token; this stack's Grafana listens on :3003):
   docker exec -e DST_GRAFANA_TOKEN=... -e DST_GRAFANA=http://grafana:3003 \
@@ -26,7 +28,7 @@ from _grafana import api
 
 DST = os.environ.get("DST_GRAFANA", "http://grafana:3000").rstrip("/")
 TOK = os.environ["DST_GRAFANA_TOKEN"]
-TZ = os.environ.get("DST_SESSION_TZ", "+00:00")   # numeric offset; "UTC" needs MariaDB tz tables
+TZ = os.environ.get("DST_SESSION_TZ", "SYSTEM")   # DB stores local; SYSTEM = container's Europe/Berlin
 
 
 def main():

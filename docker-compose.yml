@@ -210,6 +210,9 @@ services:
       # name charge stops after the charging operator (Open Charge Map then OSM) instead of a street
       # address. OCM_API_KEY is a free key from openchargemap.org (blank = skip OCM, OSM only).
       # TLW_CHARGER_NAMES=0 disables. Home charging stays HOME_LABEL.
+      # the teslalogger schema stores wall-clock LOCAL time; tlwriter matches it (the Grafana MySQL
+      # datasource is set to the same zone via grafana-fix-datasource-tz.py). Override for your zone.
+      TLW_TZ: ${TLW_TZ:-Europe/Berlin}
       TLW_CHARGER_NAMES: ${TLW_CHARGER_NAMES:-1}
       OCM_API_KEY: ${OCM_API_KEY:-}
       CHARGER_RADIUS: ${CHARGER_RADIUS:-75}
