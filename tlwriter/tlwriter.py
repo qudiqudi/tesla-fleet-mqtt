@@ -640,9 +640,14 @@ def close_charge(vin, ts):
     write_charging_row(vin, ts)
     end_energy = (lv(vin, "ACChargingEnergyIn") or 0) + (lv(vin, "DCChargingEnergyIn") or 0)
     added = end_energy - s["start_energy"] if end_energy >= s["start_energy"] else None
-    # only a DC session carries a meaningful charger brand; gating on it avoids a stale Tesla brand
-    # from an earlier Supercharge bleeding into a later AC charge (latest[] keeps the last value)
-    brand = lv(vin, "FastChargerBrand") if s.get("charger_type") == "DC" else None
+    # Fleet telemetry has no charger-brand field; the brand lives in FastChargerType, whose enum
+    # distinguishes "Supercharger" from the CCS types (Combo/CHAdeMO/...). Normalise to teslalogger's
+    # fast_charger_brand values ("Tesla"/"<invalid>") so history and the lookup agree. Only trust it
+    # for DC -- gating avoids a stale Supercharger type bleeding into a later AC charge (latest[] keeps
+    # the last value).
+    brand = None
+    if s.get("charger_type") == "DC":
+        brand = "Tesla" if "supercharger" in (lv(vin, "FastChargerType") or "").lower() else "<invalid>"
     execute("""UPDATE chargingstate SET EndDate=%s, EndChargingID=%s, charge_energy_added=%s,
                max_charger_power=%s, fast_charger_type=%s, fast_charger_brand=%s WHERE id=%s""",
             (dts(ts), s["last_charging_id"], added, as_int(s["max_power"]), s["charger_type"],
