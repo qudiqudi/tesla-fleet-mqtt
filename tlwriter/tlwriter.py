@@ -20,6 +20,7 @@ import os
 import queue
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -230,6 +231,26 @@ def _charger_label(operator, place):
     return (operator or place)[:255] or None
 
 
+def _fetch_json(req, timeout):
+    # Charger sources (OCM, Overpass) rate-limit (429) and overload (5xx) in bursts; retry those
+    # and transient network errors with a short backoff so one blip doesn't drop the name.
+    for i in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 502, 503, 504) and i < 2:
+                time.sleep(4 * (i + 1) ** 2)   # 4s, 16s
+                continue
+            raise
+        except urllib.error.URLError:
+            if i < 2:
+                time.sleep(4 * (i + 1))
+                continue
+            raise
+    return None
+
+
 def ocm_charger(lat, lng):
     # Open Charge Map: best operator names, but needs a (free) API key
     if not OCM_API_KEY:
@@ -238,8 +259,7 @@ def ocm_charger(lat, lng):
                                      "distance": CHARGER_RADIUS / 1000.0, "distanceunit": "KM",
                                      "maxresults": "1", "key": OCM_API_KEY})
     req = urllib.request.Request(OCM_API_URL + "?" + params, headers={"User-Agent": GEOCODE_UA})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        d = json.loads(r.read().decode("utf-8", "replace")) or []
+    d = _fetch_json(req, 15) or []
     if not d:
         return None
     poi = d[0]
@@ -256,8 +276,7 @@ def osm_charger(lat, lng):
          % (int(CHARGER_RADIUS), lat, lng))
     req = urllib.request.Request(OVERPASS_URL, data=urllib.parse.urlencode({"data": q}).encode(),
                                  headers={"User-Agent": GEOCODE_UA})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        els = (json.loads(r.read().decode("utf-8", "replace")) or {}).get("elements", [])
+    els = (_fetch_json(req, 30) or {}).get("elements", [])
     if not els:
         return None
     t = els[0].get("tags", {})
