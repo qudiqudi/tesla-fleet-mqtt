@@ -81,7 +81,6 @@ jq -n --arg vin "$TESLA_VIN" --arg ca "$(cat "$CA_CRT")" \
       GpsHeading:          {interval_seconds: 5},
       TimeToFullCharge:    {interval_seconds: 60},
       FastChargerType:     {interval_seconds: 60},
-      FastChargerBrand:    {interval_seconds: 60},
       FdWindow:            {interval_seconds: 30},
       FpWindow:            {interval_seconds: 30},
       RdWindow:            {interval_seconds: 30},
