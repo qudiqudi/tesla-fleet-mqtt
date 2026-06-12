@@ -86,6 +86,10 @@ GEOCODE_UA = os.environ.get("GEOCODE_USER_AGENT",
                             "tesla-fleet-mqtt/1.0 (https://github.com/qudiqudi/tesla-fleet-mqtt)")
 GEOCODE_MIN_INTERVAL = float(os.environ.get("GEOCODE_MIN_INTERVAL", "1.1"))  # >=1s per OSM policy
 GEOCODE_BACKFILL_LIMIT = int(os.environ.get("GEOCODE_BACKFILL_LIMIT", "200"))
+# re-run the drive-endpoint backfill whenever the geocode queue has been idle this long, so a name
+# that was lost (a transient DB error drops the queued item, or a restart clears the in-memory queue)
+# self-heals instead of staying blank until the next restart
+GEOCODE_BACKFILL_INTERVAL = float(os.environ.get("GEOCODE_BACKFILL_INTERVAL", "1800"))
 
 # Name charge stops after the charging operator (like teslalogger's charger geofences) instead of
 # a bare street address: on charge start the charge position is looked up against Open Charge Map
@@ -354,7 +358,11 @@ def geocode_worker():
     global _geo_db, _geo_last
     backfill_geocode()   # one-shot at startup, in this thread (only thread touching the geo conn)
     while True:
-        pos_id, is_charger, brand = geocode_q.get()
+        try:
+            pos_id, is_charger, brand = geocode_q.get(timeout=GEOCODE_BACKFILL_INTERVAL)
+        except queue.Empty:
+            backfill_geocode()   # queue idle -> re-queue any drive end whose geocode was lost
+            continue
         try:
             # Read the position's OWN coordinates rather than trusting live lat/lng at queue time:
             # a drive opens off an older idle pos, and right after wake the live Location can be
@@ -417,7 +425,7 @@ def backfill_geocode():
             placeholders = ",".join(["%s"] * len(ids))
             # build the IN list by concatenation (NOT %-format), so the LIMIT %s stays a pymysql param
             cur.execute("SELECT id FROM pos WHERE id IN (" + placeholders + ") "
-                        "AND lat IS NOT NULL AND (address IS NULL OR address='') "
+                        "AND lat IS NOT NULL AND NOT (lat=0 AND lng=0) AND (address IS NULL OR address='') "
                         "ORDER BY id DESC LIMIT %s", tuple(ids) + (GEOCODE_BACKFILL_LIMIT,))
             rows = cur.fetchall()
         for (pid,) in rows:
@@ -928,15 +936,22 @@ def tick_vin(vin, t):
         # offline / asleep: close any open session and mark state (connectivity catches
         # it sooner than waiting out the telemetry-silence timeout)
         ots = L.get("_ts", t)
-        if st(vin)["mode"] is not None:
-            set_mode(vin, None, ots)
+        s0 = st(vin)
+        if s0["mode"] is not None:
+            # end the open drive/charge at its last activity, not at the sleep instant, so the
+            # duration matches teslalogger (it ends a drive when the car stops, not when it sleeps)
+            a0 = active.get(vin, {})
+            set_mode(vin, None, a0.get("drive" if s0["mode"] == "drive" else "charge", ots))
         set_vstate(vin, "asleep", ots)
         set_shift(vin, None, ots)
         publish_ha(vin)
         return
     a = active.get(vin, {})
     charging = (t - a.get("charge", 0)) < CHARGE_END_TIMEOUT
-    moving = (t - a.get("drive", 0)) < DRIVE_END_TIMEOUT
+    # a shift to Park ends the drive now: teslalogger splits a trip at each park, so a brief stop
+    # (gear P) becomes its own trip boundary instead of being merged into one long drive
+    parked = gear_letter(lv(vin, "Gear")) == "P"
+    moving = not parked and (t - a.get("drive", 0)) < DRIVE_END_TIMEOUT
     if charging:
         set_mode(vin, "charge", t)
     elif moving:
